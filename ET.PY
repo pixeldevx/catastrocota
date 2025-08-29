@@ -111,7 +111,7 @@ try:
     conn = psycopg2.connect(host=db_host, dbname=db_name, user=db_user, password=db_password, port=db_port)
     
     # ---> CAMBIO: Llamamos a la nueva función pasándole el nombre del archivo
-    procesar_csv('matriculas_input.csv', conn)
+    procesar_csv('Libro4.csv', conn)
 
 except psycopg2.OperationalError as e:
     print(f"❌ Error de conexión: No se pudo conectar a la base de datos de Supabase. Revisa tus credenciales.")

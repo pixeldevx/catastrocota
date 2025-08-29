@@ -76,22 +76,26 @@ def generar_grafo_matricula(no_matricula_inicial, db_params):
                 node["color"] = "#FF0000"
                 node["size"] = 40
 
-        net.set_options("""
+                net.set_options("""
         var options = {
+          "layout": {
+            "hierarchical": {
+              "enabled": true,
+              "direction": "UD",
+              "sortMethod": "directed",
+              "levelSeparation": 150,
+              "nodeSpacing": 100
+            }
+          },
           "physics": {
-            "barnesHut": {
-              "gravitationalConstant": -25000,
-              "centralGravity": 0.1,
-              "springLength": 150
-            },
-            "minVelocity": 0.75
+            "enabled": false
           }
         }
         """)
 
         nombre_archivo = f"grafo_{no_matricula_inicial}.html"
         net.save_graph(nombre_archivo)
-        print(f"🎉 ¡Grafo generado! Abre el archivo '{nombre_archivo}' en tu navegador.")
+        return nombre_archivo, f"✅ Se encontraron {len(df)} relaciones."
 
     except Exception as e:
         print(f"❌ Ocurrió un error: {e}")

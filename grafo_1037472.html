@@ -314,7 +314,7 @@ function highlightFilter(filter) {
                   // adding nodes and edges to the graph
                   data = {nodes: nodes, edges: edges};
 
-                  var options = {"physics": {"barnesHut": {"gravitationalConstant": -25000, "centralGravity": 0.1, "springLength": 150}, "minVelocity": 0.75}};
+                  var options = {"layout": {"hierarchical": {"enabled": true, "direction": "UD", "sortMethod": "directed", "levelSeparation": 150, "nodeSpacing": 100}}, "physics": {"enabled": false}};
 
                   
 
