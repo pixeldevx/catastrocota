@@ -5,22 +5,18 @@ import networkx as nx
 from pyvis.network import Network
 import os
 
-# --- NUEVA FUNCIÓN ---
+# --- FUNCIÓN DE VERIFICACIÓN (CORREGIDA) ---
 def verificar_informacion_catastral(no_matricula, db_params):
     """
     Verifica si una matrícula tiene al menos un registro en la tabla InformacionCatastral.
-    Devuelve True si existe, False si no, o un string de error si algo falla.
     """
     try:
         with psycopg2.connect(**db_params) as conn:
-            # Usamos una consulta simple y eficiente para verificar la existencia
-            query = "SELECT EXISTS (SELECT 1 FROM public.informacioncatastral WHERE matricula = %(matricula)s);"
-            # Pandas facilita la ejecución y obtención del resultado booleano
+            # CORRECCIÓN: Se usa "Matricula" con comillas dobles para respetar mayúsculas/minúsculas.
+            query = 'SELECT EXISTS (SELECT 1 FROM public.informacioncatastral WHERE "Matricula" = %(matricula)s);'
             df = pd.read_sql_query(query, conn, params={'matricula': no_matricula})
-            # El resultado es un DataFrame con una sola celda [0, 'exists'] que contiene True o False
             return df.iloc[0]['exists']
     except Exception as e:
-        # En caso de un error de conexión o consulta, lo notificamos
         return f"Error al verificar en catastro: {e}"
 
 
@@ -78,46 +74,43 @@ def generar_grafo_matricula(no_matricula_inicial, db_params):
 
 # --- INTERFAZ GRÁFICA CON STREAMLIT ---
 
+st.set_page_config(layout="wide") # Hacemos la página más ancha para las columnas
+
 st.title("Visor de Grafos de Matrículas 🕸️")
-st.write("Esta herramienta visualiza las relaciones jerárquicas entre matrículas y verifica su información catastral.")
+st.write("Esta herramienta visualiza las relaciones jerárquicas y verifica la información catastral.")
 
 matricula_input = st.text_input("Introduce el número de matrícula inmobiliaria:", placeholder="Ej: 1037472")
 
 if st.button("Consultar y Generar Grafo"):
     if matricula_input:
-        # Obtenemos las credenciales de forma segura
         db_credentials = st.secrets["db_credentials"]
         
-        st.markdown("---") # Una línea para separar visualmente
-        
-        # --- SECCIÓN MODIFICADA: TARJETA DE INFORMACIÓN ---
-        st.subheader("Tarjeta de Información Rápida")
-        
-        # 1. Ejecutamos la nueva función de verificación
-        existe_en_catastro = verificar_informacion_catastral(matricula_input, db_credentials)
-        
-        # 2. Mostramos el resultado en una "métrica" o tarjeta
-        if isinstance(existe_en_catastro, bool):
-            # Si la función devuelve True/False, mostramos el resultado
-            resultado_texto = "Sí" if existe_en_catastro else "No"
-            st.metric(label="R1: ¿En Base Catastral?", value=resultado_texto)
-        else:
-            # Si la función devolvió un error, lo mostramos
-            st.error(existe_en_catastro)
-        
-        st.markdown("---")
+        # --- SECCIÓN MODIFICADA: DISEÑO EN COLUMNAS ---
+        col1, col2 = st.columns([3, 1]) # Columna 1 (izquierda) es 3 veces más ancha que la Columna 2 (derecha)
 
-        # --- CÓDIGO EXISTENTE: GENERACIÓN DEL GRAFO ---
-        with st.spinner(f"🔎 Generando grafo de relaciones para {matricula_input}..."):
-            nombre_archivo_html, mensaje = generar_grafo_matricula(matricula_input, db_credentials)
-        
-        st.info(mensaje)
-
-        if nombre_archivo_html:
-            with open(nombre_archivo_html, 'r', encoding='utf-8') as f:
-                source_code = f.read()
-                st.components.v1.html(source_code, height=820, scrolling=True)
+        # Contenido de la Columna Derecha (Tarjeta de Información)
+        with col2:
+            st.subheader("Info Rápida")
+            existe_en_catastro = verificar_informacion_catastral(matricula_input, db_credentials)
             
-            os.remove(nombre_archivo_html)
+            if isinstance(existe_en_catastro, bool):
+                resultado_texto = "Sí ✅" if existe_en_catastro else "No ❌"
+                st.metric(label="R1: En Base Catastral", value=resultado_texto)
+            else:
+                st.error(existe_en_catastro)
+
+        # Contenido de la Columna Izquierda (Grafo)
+        with col1:
+            with st.spinner(f"🔎 Generando grafo de relaciones para {matricula_input}..."):
+                nombre_archivo_html, mensaje = generar_grafo_matricula(matricula_input, db_credentials)
+            
+            st.info(mensaje)
+
+            if nombre_archivo_html:
+                with open(nombre_archivo_html, 'r', encoding='utf-8') as f:
+                    source_code = f.read()
+                    st.components.v1.html(source_code, height=820, scrolling=True)
+                
+                os.remove(nombre_archivo_html)
     else:
         st.warning("Por favor, introduce un número de matrícula.")
