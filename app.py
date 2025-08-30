@@ -5,26 +5,50 @@ import networkx as nx
 from pyvis.network import Network
 import os
 
-# --- FUNCIÓN DE VERIFICACIÓN (CORREGIDA) ---
-def verificar_informacion_catastral(no_matricula, db_params):
+# --- CONFIGURACIÓN DE LA PÁGINA ---
+st.set_page_config(layout="wide")
+
+# --- FUNCIONES DE BASE DE DATOS ---
+
+def obtener_info_catastral(no_matricula, db_params):
     """
-    Verifica si una matrícula tiene al menos un registro en la tabla InformacionCatastral.
+    Busca todos los detalles de una matrícula en la tabla InformacionCatastral.
+    Devuelve un diccionario con los datos encontrados.
     """
     try:
         with psycopg2.connect(**db_params) as conn:
-            # CORRECCIÓN: Se usa "Matricula" con comillas dobles para respetar mayúsculas/minúsculas.
-            query = 'SELECT EXISTS (SELECT 1 FROM public.informacioncatastral WHERE "Matricula" = %(matricula)s);'
+            query = """
+                SELECT numero_predial, area_terreno, area_construida, nombre 
+                FROM public.informacioncatastral 
+                WHERE "Matricula" = %(matricula)s;
+            """
             df = pd.read_sql_query(query, conn, params={'matricula': no_matricula})
-            return df.iloc[0]['exists']
+
+            if df.empty:
+                return {"encontrado": False}
+
+            # Agregamos los datos. El área, etc., será la misma para todos los registros.
+            # Juntamos todos los nombres de propietarios en una lista.
+            info = {
+                "encontrado": True,
+                "numero_predial": df['numero_predial'].iloc[0],
+                "area_terreno": df['area_terreno'].iloc[0],
+                "area_construida": df['area_construida'].iloc[0],
+                "propietarios": df['nombre'].tolist()
+            }
+            return info
+            
     except Exception as e:
-        return f"Error al verificar en catastro: {e}"
+        st.error(f"Error al obtener info catastral: {e}")
+        return {"encontrado": False}
 
 
 def generar_grafo_matricula(no_matricula_inicial, db_params):
     """
-    Genera un grafo interactivo y devuelve el nombre del archivo HTML.
+    Genera un grafo interactivo con nodos clicables y devuelve el nombre del archivo HTML.
     """
     try:
+        # ... (La consulta SQL recursiva para el grafo no cambia)
         with psycopg2.connect(**db_params) as conn:
             query_recursiva = """
             WITH RECURSIVE familia_grafo AS (
@@ -56,8 +80,13 @@ def generar_grafo_matricula(no_matricula_inicial, db_params):
         net = Network(height="800px", width="100%", directed=True, notebook=True, cdn_resources='in_line')
         net.from_nx(g)
 
+        # --- MODIFICACIÓN CLAVE: Nodos Clicables ---
         for node in net.nodes:
-            if str(node["id"]) == str(no_matricula_inicial):
+            node_id = str(node["id"])
+            # Cada nodo ahora es un enlace que recarga la app con un parámetro en la URL
+            node["href"] = f"?matricula_seleccionada={node_id}"
+            node["title"] = f"Matrícula: {node_id}<br>Click para ver detalles catastrales"
+            if node_id == str(no_matricula_inicial):
                 node["color"] = "#FF0000"
                 node["size"] = 40
         
@@ -74,43 +103,76 @@ def generar_grafo_matricula(no_matricula_inicial, db_params):
 
 # --- INTERFAZ GRÁFICA CON STREAMLIT ---
 
-st.set_page_config(layout="wide") # Hacemos la página más ancha para las columnas
+st.title("Visor Interactivo de Matrículas 🕸️")
 
-st.title("Visor de Grafos de Matrículas 🕸️")
-st.write("Esta herramienta visualiza las relaciones jerárquicas y verifica la información catastral.")
+# Usamos el estado de la sesión para recordar la última matrícula buscada
+if 'matricula_buscada' not in st.session_state:
+    st.session_state.matricula_buscada = ''
 
-matricula_input = st.text_input("Introduce el número de matrícula inmobiliaria:", placeholder="Ej: 1037472")
+# Caja de texto para la búsqueda principal
+matricula_input = st.text_input(
+    "Introduce el número de matrícula para generar el grafo:", 
+    st.session_state.matricula_buscada,
+    placeholder="Ej: 1037472"
+)
 
-if st.button("Consultar y Generar Grafo"):
-    if matricula_input:
+# Detectamos si el usuario ha hecho una nueva búsqueda
+if matricula_input != st.session_state.matricula_buscada:
+    st.session_state.matricula_buscada = matricula_input
+    # Limpiamos la selección de la URL para evitar confusiones
+    st.query_params.clear()
+
+# --- LÓGICA DE VISUALIZACIÓN ---
+
+# Leemos la matrícula seleccionada desde la URL (si un nodo fue clickeado)
+params = st.query_params
+matricula_seleccionada = params.get("matricula_seleccionada")
+
+# Definimos las columnas para el diseño
+col1, col2 = st.columns([3, 1])
+
+# --- Columna Derecha (Tarjeta de Información Dinámica) ---
+with col2:
+    st.subheader("🔎 Detalles Catastrales")
+    
+    # Decidimos qué matrícula mostrar: la seleccionada en el grafo o la buscada
+    matricula_a_mostrar = matricula_seleccionada or st.session_state.matricula_buscada
+
+    if matricula_a_mostrar:
+        db_credentials = st.secrets["db_credentials"]
+        info = obtener_info_catastral(matricula_a_mostrar, db_credentials)
+        
+        st.metric(label="Matrícula Seleccionada", value=matricula_a_mostrar)
+
+        if info["encontrado"]:
+            st.success("✅ Encontrada en Base Catastral")
+            st.write(f"**Número Predial:** {info['numero_predial']}")
+            st.write(f"**Área Terreno:** {info['area_terreno']} m²")
+            st.write(f"**Área Construida:** {info['area_construida']} m²")
+            
+            with st.expander(f"Propietarios ({len(info['propietarios'])})"):
+                for propietario in info['propietarios']:
+                    st.write(f"- {propietario}")
+        else:
+            st.warning("❌ No encontrada en Base Catastral")
+    else:
+        st.info("Busca una matrícula o haz clic en un nodo del grafo para ver sus detalles.")
+
+# --- Columna Izquierda (Grafo) ---
+with col1:
+    if st.session_state.matricula_buscada:
+        st.subheader(f"Grafo de Relaciones para: {st.session_state.matricula_buscada}")
         db_credentials = st.secrets["db_credentials"]
         
-        # --- SECCIÓN MODIFICADA: DISEÑO EN COLUMNAS ---
-        col1, col2 = st.columns([3, 1]) # Columna 1 (izquierda) es 3 veces más ancha que la Columna 2 (derecha)
+        with st.spinner("Generando grafo..."):
+            nombre_archivo_html, mensaje = generar_grafo_matricula(st.session_state.matricula_buscada, db_credentials)
+        
+        st.write(mensaje)
 
-        # Contenido de la Columna Derecha (Tarjeta de Información)
-        with col2:
-            st.subheader("Info Rápida")
-            existe_en_catastro = verificar_informacion_catastral(matricula_input, db_credentials)
-            
-            if isinstance(existe_en_catastro, bool):
-                resultado_texto = "Sí ✅" if existe_en_catastro else "No ❌"
-                st.metric(label="R1: En Base Catastral", value=resultado_texto)
-            else:
-                st.error(existe_en_catastro)
-
-        # Contenido de la Columna Izquierda (Grafo)
-        with col1:
-            with st.spinner(f"🔎 Generando grafo de relaciones para {matricula_input}..."):
-                nombre_archivo_html, mensaje = generar_grafo_matricula(matricula_input, db_credentials)
-            
-            st.info(mensaje)
-
-            if nombre_archivo_html:
-                with open(nombre_archivo_html, 'r', encoding='utf-8') as f:
-                    source_code = f.read()
-                    st.components.v1.html(source_code, height=820, scrolling=True)
-                
-                os.remove(nombre_archivo_html)
+        if nombre_archivo_html:
+            with open(nombre_archivo_html, 'r', encoding='utf-8') as f:
+                source_code = f.read()
+                st.components.v1.html(source_code, height=820, scrolling=True)
+            os.remove(nombre_archivo_html)
     else:
-        st.warning("Por favor, introduce un número de matrícula.")
+        st.info("↑ Introduce una matrícula para comenzar.")

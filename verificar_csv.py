@@ -1,111 +1,136 @@
-import csv
+import pandas as pd
+import psycopg2
+from psycopg2.extras import execute_batch
+import multiprocessing
+import glob
+import time
+import os
 
-def depurar_csv(nombre_archivo):
+# --- TUS CREDENCIALES DE BASE DE DATOS ---
+DB_CREDS = {
+    "host": "aws-0-sa-east-1.pooler.supabase.com",
+    "dbname": "postgres",
+    "user": "postgres.kbcwpzwhnlscogiglthk",
+    "password": "cristianpixel01@", # ¡Reemplázame!
+    "port": "6543"
+}
+
+def procesar_chunk_para_recolectar(ruta_archivo_csv):
     """
-    Lee y procesa un archivo CSV en modo de depuración (dry run).
-    No se conecta a ninguna base de datos. En su lugar, simula las
-    operaciones y muestra un informe final.
-
-    Args:
-        nombre_archivo (str): La ruta al archivo CSV que se va a procesar.
+    Fase 1 (Paralela): Lee un CSV y devuelve las matrículas y relaciones encontradas.
+    NO se conecta a la base de datos.
     """
-    print("🚀 Iniciando script en MODO DEPURACIÓN (DRY RUN)...")
-    print("   (No se realizarán cambios en la base de datos)\n")
-
-    # --- Simulación de la Base de Datos ---
-    # Usamos un diccionario para simular la tabla 'Matriculas'
-    # Formato: {'numero_matricula': id_simulado}
-    matriculas_simuladas = {}
-    
-    # Usamos un diccionario inverso para buscar por ID fácilmente
-    # Formato: {id_simulado: 'numero_matricula'}
-    id_a_matricula = {}
-
-    # Usamos un set para simular la tabla 'RelacionesMatriculas' y evitar duplicados
-    # Formato: {(id_padre, id_hija)}
-    relaciones_simuladas = set()
-    
-    # Un contador para simular los IDs autoincrementales de la base de datos
-    siguiente_id = 1
-
-    # --- Función Auxiliar Simulada ---
-    def obtener_o_crear_matricula_id_simulado(no_matricula):
-        nonlocal siguiente_id
-        if not no_matricula or not no_matricula.strip():
-            return None
-        
-        no_matricula = no_matricula.strip()
-        
-        # Si la matrícula ya existe en nuestra simulación, devolvemos su ID
-        if no_matricula in matriculas_simuladas:
-            return matriculas_simuladas[no_matricula]
-        # Si no existe, la "creamos" en nuestra simulación
-        else:
-            id_actual = siguiente_id
-            matriculas_simuladas[no_matricula] = id_actual
-            id_a_matricula[id_actual] = no_matricula
-            siguiente_id += 1
-            print(f"   [+] Matrícula nueva detectada: '{no_matricula}' (ID simulado: {id_actual})")
-            return id_actual
-
-    # --- Lógica Principal de Lectura ---
     try:
-        with open(nombre_archivo, mode='r', encoding='utf-8') as archivo_csv:
-            lector_csv = csv.reader(archivo_csv, delimiter=';')
-            next(lector_csv, None)  # Saltamos el encabezado
+        df = pd.read_csv(ruta_archivo_csv, sep=';', dtype=str).fillna('')
+        
+        relaciones_potenciales = set()
+        matriculas_con_estado = {} # Usamos un diccionario para guardar matrícula -> estado
 
-            for fila in lector_csv:
-                no_matricula_actual = fila[0]
-                matriculas_padre_str = fila[2]
-                matricula_hija_str = fila[3]
+        for index, row in df.iterrows():
+            matricula_actual = row['no_matricula_inmobiliaria'].strip()
+            if not matricula_actual:
+                continue
 
-                id_actual = obtener_o_crear_matricula_id_simulado(no_matricula_actual)
+            matriculas_con_estado[matricula_actual] = row['estado_folio'].strip()
 
-                # Procesamos sus padres (relación "hacia arriba")
-                if matriculas_padre_str:
-                    for no_padre in matriculas_padre_str.split(','):
-                        id_padre = obtener_o_crear_matricula_id_simulado(no_padre)
-                        if id_padre and id_actual:
-                            relaciones_simuladas.add((id_padre, id_actual))
+            matriculas_matriz_str = row['matriculas_matriz']
+            if matriculas_matriz_str:
+                padres = [p.strip() for p in matriculas_matriz_str.split(',') if p.strip()]
+                for padre in padres:
+                    # Guardamos el padre sin estado específico, se le asignará uno por defecto si no es principal
+                    if padre not in matriculas_con_estado:
+                        matriculas_con_estado[padre] = 'ACTIVO' # Valor por defecto
+                    relaciones_potenciales.add((padre, matricula_actual))
 
-                # Procesamos su hija (relación "hacia abajo")
-                if matricula_hija_str:
-                    id_hija = obtener_o_crear_matricula_id_simulado(matricula_hija_str)
-                    if id_actual and id_hija:
-                        relaciones_simuladas.add((id_actual, id_hija))
+            matriculas_derivadas_str = row['matriculas_derivadas']
+            if matriculas_derivadas_str:
+                hijas = [h.strip() for h in matriculas_derivadas_str.split(',') if h.strip()]
+                for hija in hijas:
+                    # Guardamos la hija sin estado específico
+                    if hija not in matriculas_con_estado:
+                        matriculas_con_estado[hija] = 'ACTIVO' # Valor por defecto
+                    relaciones_potenciales.add((matricula_actual, hija))
 
-    except FileNotFoundError:
-        print(f"❌ ERROR: No se pudo encontrar el archivo '{nombre_archivo}'.")
-        return # Salimos de la función si no hay archivo
+        return (matriculas_con_estado, relaciones_potenciales)
+    except Exception as e:
+        print(f"Error leyendo {os.path.basename(ruta_archivo_csv)}: {e}")
+        return ({}, set())
 
-    # --- Informe Final ---
-    print("\n-------------------------------------------")
-    print("✅ ANÁLISIS COMPLETADO")
-    print("-------------------------------------------")
-    print(f"📄 Matrículas únicas que se crearían: {len(matriculas_simuladas)}")
-    print(f"🔗 Relaciones únicas que se crearían: {len(relaciones_simuladas)}")
-    print("-------------------------------------------\n")
 
-    # Mostramos algunos ejemplos para verificación
-    print("🕵️‍♂️ MUESTRA DE DATOS PROCESADOS:\n")
+if __name__ == '__main__':
+    directorio_chunks = 'chunks_para_procesar'
+    archivos_csv = glob.glob(f'{directorio_chunks}/*.csv')
 
-    # Imprimir las primeras 10 matrículas que se crearían
-    print("--- Primeras 10 Matrículas ---")
-    for i, (num, sim_id) in enumerate(matriculas_simuladas.items()):
-        if i >= 10: break
-        print(f"  - Matrícula: '{num}' (tendría el ID: {sim_id})")
+    if not archivos_csv:
+        print("🔴 No se encontraron archivos .csv en la carpeta 'chunks'.")
+    else:
+        num_procesos = min(os.cpu_count(), len(archivos_csv))
+        print(f"🚀 Fase 1: Recolectando datos en paralelo con {num_procesos} procesos...")
+        
+        inicio = time.time()
+        with multiprocessing.Pool(processes=num_procesos) as pool:
+            resultados = pool.map(procesar_chunk_para_recolectar, archivos_csv)
+        
+        # --- Fase 2: Agregando todos los resultados en un solo lugar ---
+        master_matriculas = {}
+        master_relaciones = set()
+        for matriculas_con_estado, relaciones in resultados:
+            master_matriculas.update(matriculas_con_estado)
+            master_relaciones.update(relaciones)
+            
+        print(f"✅ Recolección completada en {time.time() - inicio:.2f} segundos.")
+        print(f"   - Se encontraron {len(master_matriculas)} matrículas únicas en total.")
+        print(f"   - Se encontraron {len(master_relaciones)} relaciones únicas en total.")
 
-    # Imprimir las primeras 20 relaciones que se crearían (en formato legible)
-    print("\n--- Primeras 20 Relaciones (Padre -> Hija) ---")
-    for i, (id_padre, id_hija) in enumerate(relaciones_simuladas):
-        if i >= 20: break
-        # Usamos el diccionario inverso para mostrar los números originales
-        num_padre = id_a_matricula.get(id_padre, "N/A")
-        num_hija = id_a_matricula.get(id_hija, "N/A")
-        print(f"  - Relación: '{num_padre}' -> '{num_hija}'")
-    
-    print("\n\n✨ Revisión finalizada. Si los datos son correctos, puedes usar el script principal.")
+        if not master_matriculas:
+            print("No se encontraron matrículas para procesar. Finalizando.")
+        else:
+            # --- Fase 3: Escribiendo en la base de datos de forma secuencial ---
+            print("\n🚀 Fase 2: Escribiendo en la base de datos...")
+            try:
+                with psycopg2.connect(**DB_CREDS) as conn:
+                    with conn.cursor() as cur:
+                        # Paso A: Insertar todas las matrículas únicas
+                        print("   - Insertando matrículas...")
+                        matriculas_a_insertar = list(master_matriculas.items())
+                        execute_batch(
+                            cur,
+                            "INSERT INTO public.matriculas (no_matricula_inmobiliaria, estado_folio) VALUES (%s, %s) ON CONFLICT (no_matricula_inmobiliaria) DO NOTHING",
+                            matriculas_a_insertar
+                        )
+                        print(f"     ... {cur.rowcount} matrículas nuevas insertadas/verificadas.")
 
-# --- Zona de Ejecución ---
-# Simplemente llama a la función con el nombre de tu archivo CSV
-depurar_csv('matriculas_input.csv')
+                        if master_relaciones:
+                            # Paso B: Obtener los IDs de TODAS las matrículas necesarias
+                            print("   - Obteniendo IDs para crear relaciones...")
+                            todas_las_matriculas_para_relacion = {m for rel in master_relaciones for m in rel}
+                            cur.execute(
+                                "SELECT no_matricula_inmobiliaria, id FROM public.matriculas WHERE no_matricula_inmobiliaria = ANY(%s)",
+                                (list(todas_las_matriculas_para_relacion),)
+                            )
+                            id_map = dict(cur.fetchall())
+
+                            # Paso C: Insertar todas las relaciones
+                            print("   - Insertando relaciones...")
+                            relaciones_con_id = []
+                            for padre, hija in master_relaciones:
+                                padre_id = id_map.get(padre)
+                                hija_id = id_map.get(hija)
+                                if padre_id and hija_id:
+                                    relaciones_con_id.append((padre_id, hija_id))
+                            
+                            execute_batch(
+                                cur,
+                                "INSERT INTO public.relacionesmatriculas (matricula_padre_id, matricula_hija_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                                relaciones_con_id
+                            )
+                            print(f"     ... {cur.rowcount} relaciones nuevas insertadas/verificadas.")
+                        
+                        conn.commit()
+                print("✅ Escritura en la base de datos completada.")
+
+            except Exception as e:
+                print(f"❌ Ocurrió un error durante la escritura en la base de datos: {e}")
+
+        fin = time.time()
+        print(f"\n✅ ¡Procesamiento total completado en {fin - inicio:.2f} segundos!")
