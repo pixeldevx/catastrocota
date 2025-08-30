@@ -37,7 +37,6 @@ def obtener_info_catastral(no_matricula, db_params):
             return info
             
     except Exception as e:
-        # En lugar de mostrar el error directamente, lo devolvemos para manejarlo en la UI
         return {"encontrado": False, "error": str(e)}
 
 
@@ -79,10 +78,9 @@ def generar_grafo_matricula(no_matricula_inicial, db_params):
 
         for node in net.nodes:
             node_id = str(node["id"])
-            # CORRECCIÓN: El atributo 'href' debe ser '_blank' para que funcione bien en el iframe de Streamlit
-            node["title"] = f"Matrícula: {node_id}<br>Click para ver detalles catastrales"
-            # En lugar de href, usamos el evento de JS para establecer el parámetro URL
-            # Esto es más robusto dentro del iframe de Streamlit
+            # --- MODIFICACIÓN AQUÍ: CAMBIO EN EL TITLE DEL TOOLTIP ---
+            node["title"] = f"Matrícula: {node_id} (Click para ver detalles)" 
+            # El js_redirect permanece igual, es para el click
             js_redirect = f'window.parent.location.href = "?matricula_buscada={no_matricula_inicial}&matricula_seleccionada={node_id}"'
             node["_onclick"] = js_redirect
             
@@ -105,26 +103,21 @@ def generar_grafo_matricula(no_matricula_inicial, db_params):
 
 st.title("Visor Interactivo de Matrículas 🕸️")
 
-# Obtenemos los parámetros de la URL
 params = st.query_params
 matricula_buscada_url = params.get("matricula_buscada")
 matricula_seleccionada_url = params.get("matricula_seleccionada")
 
-# La caja de texto determina qué grafo se muestra
 matricula_input = st.text_input(
     "Introduce el número de matrícula para generar el grafo:", 
-    value=matricula_buscada_url or "", # El valor inicial se toma de la URL si existe
+    value=matricula_buscada_url or "",
     placeholder="Ej: 1037472"
 )
 
-# Definimos las columnas para el diseño
 col1, col2 = st.columns([3, 1])
 
-# --- Columna Derecha (Tarjeta de Información Dinámica) ---
 with col2:
     st.subheader("🔎 Detalles Catastrales")
     
-    # La matrícula a mostrar en la tarjeta TIENE PRIORIDAD desde el clic (URL)
     matricula_a_mostrar = matricula_seleccionada_url or matricula_input
 
     if matricula_a_mostrar:
@@ -149,10 +142,14 @@ with col2:
     else:
         st.info("Busca una matrícula o haz clic en un nodo del grafo para ver sus detalles.")
 
-# --- Columna Izquierda (Grafo) ---
 with col1:
-    if matricula_input: # El grafo siempre se genera basado en la caja de texto
-        if st.button("Generar Grafo") or matricula_buscada_url:
+    if matricula_input:
+        # Solo mostrar el botón si no estamos ya mostrando un grafo por URL
+        if not matricula_buscada_url:
+            st.button("Generar Grafo")
+        
+        # Generar el grafo si hay input o si se ha buscado desde la URL
+        if matricula_input: # Se valida que haya algo en el input
             st.subheader(f"Grafo de Relaciones para: {matricula_input}")
             db_credentials = st.secrets["db_credentials"]
             
@@ -164,7 +161,6 @@ with col1:
             if nombre_archivo_html:
                 with open(nombre_archivo_html, 'r', encoding='utf-8') as f:
                     source_code = f.read()
-                    # Usamos una key única para forzar el refresco del componente
                     st.components.v1.html(source_code, height=820, scrolling=True)
                 os.remove(nombre_archivo_html)
     else:
