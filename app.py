@@ -27,8 +27,6 @@ def obtener_info_catastral(no_matricula, db_params):
             if df.empty:
                 return {"encontrado": False}
 
-            # Agregamos los datos. El área, etc., será la misma para todos los registros.
-            # Juntamos todos los nombres de propietarios en una lista.
             info = {
                 "encontrado": True,
                 "numero_predial": df['numero_predial'].iloc[0],
@@ -39,8 +37,8 @@ def obtener_info_catastral(no_matricula, db_params):
             return info
             
     except Exception as e:
-        st.error(f"Error al obtener info catastral: {e}")
-        return {"encontrado": False}
+        # En lugar de mostrar el error directamente, lo devolvemos para manejarlo en la UI
+        return {"encontrado": False, "error": str(e)}
 
 
 def generar_grafo_matricula(no_matricula_inicial, db_params):
@@ -48,7 +46,6 @@ def generar_grafo_matricula(no_matricula_inicial, db_params):
     Genera un grafo interactivo con nodos clicables y devuelve el nombre del archivo HTML.
     """
     try:
-        # ... (La consulta SQL recursiva para el grafo no cambia)
         with psycopg2.connect(**db_params) as conn:
             query_recursiva = """
             WITH RECURSIVE familia_grafo AS (
@@ -80,12 +77,15 @@ def generar_grafo_matricula(no_matricula_inicial, db_params):
         net = Network(height="800px", width="100%", directed=True, notebook=True, cdn_resources='in_line')
         net.from_nx(g)
 
-        # --- MODIFICACIÓN CLAVE: Nodos Clicables ---
         for node in net.nodes:
             node_id = str(node["id"])
-            # Cada nodo ahora es un enlace que recarga la app con un parámetro en la URL
-            node["href"] = f"?matricula_seleccionada={node_id}"
+            # CORRECCIÓN: El atributo 'href' debe ser '_blank' para que funcione bien en el iframe de Streamlit
             node["title"] = f"Matrícula: {node_id}<br>Click para ver detalles catastrales"
+            # En lugar de href, usamos el evento de JS para establecer el parámetro URL
+            # Esto es más robusto dentro del iframe de Streamlit
+            js_redirect = f'window.parent.location.href = "?matricula_buscada={no_matricula_inicial}&matricula_seleccionada={node_id}"'
+            node["_onclick"] = js_redirect
+            
             if node_id == str(no_matricula_inicial):
                 node["color"] = "#FF0000"
                 node["size"] = 40
@@ -101,32 +101,21 @@ def generar_grafo_matricula(no_matricula_inicial, db_params):
     except Exception as e:
         return None, f"❌ Ocurrió un error al generar el grafo: {e}"
 
-# --- INTERFAZ GRÁFICA CON STREAMLIT ---
+# --- INTERFAZ GRÁFICA Y LÓGICA PRINCIPAL ---
 
 st.title("Visor Interactivo de Matrículas 🕸️")
 
-# Usamos el estado de la sesión para recordar la última matrícula buscada
-if 'matricula_buscada' not in st.session_state:
-    st.session_state.matricula_buscada = ''
+# Obtenemos los parámetros de la URL
+params = st.query_params
+matricula_buscada_url = params.get("matricula_buscada")
+matricula_seleccionada_url = params.get("matricula_seleccionada")
 
-# Caja de texto para la búsqueda principal
+# La caja de texto determina qué grafo se muestra
 matricula_input = st.text_input(
     "Introduce el número de matrícula para generar el grafo:", 
-    st.session_state.matricula_buscada,
+    value=matricula_buscada_url or "", # El valor inicial se toma de la URL si existe
     placeholder="Ej: 1037472"
 )
-
-# Detectamos si el usuario ha hecho una nueva búsqueda
-if matricula_input != st.session_state.matricula_buscada:
-    st.session_state.matricula_buscada = matricula_input
-    # Limpiamos la selección de la URL para evitar confusiones
-    st.query_params.clear()
-
-# --- LÓGICA DE VISUALIZACIÓN ---
-
-# Leemos la matrícula seleccionada desde la URL (si un nodo fue clickeado)
-params = st.query_params
-matricula_seleccionada = params.get("matricula_seleccionada")
 
 # Definimos las columnas para el diseño
 col1, col2 = st.columns([3, 1])
@@ -135,8 +124,8 @@ col1, col2 = st.columns([3, 1])
 with col2:
     st.subheader("🔎 Detalles Catastrales")
     
-    # Decidimos qué matrícula mostrar: la seleccionada en el grafo o la buscada
-    matricula_a_mostrar = matricula_seleccionada or st.session_state.matricula_buscada
+    # La matrícula a mostrar en la tarjeta TIENE PRIORIDAD desde el clic (URL)
+    matricula_a_mostrar = matricula_seleccionada_url or matricula_input
 
     if matricula_a_mostrar:
         db_credentials = st.secrets["db_credentials"]
@@ -144,7 +133,9 @@ with col2:
         
         st.metric(label="Matrícula Seleccionada", value=matricula_a_mostrar)
 
-        if info["encontrado"]:
+        if "error" in info:
+             st.error(f"Error de base de datos: {info['error']}")
+        elif info["encontrado"]:
             st.success("✅ Encontrada en Base Catastral")
             st.write(f"**Número Predial:** {info['numero_predial']}")
             st.write(f"**Área Terreno:** {info['area_terreno']} m²")
@@ -152,7 +143,7 @@ with col2:
             
             with st.expander(f"Propietarios ({len(info['propietarios'])})"):
                 for propietario in info['propietarios']:
-                    st.write(f"- {propietario}")
+                    st.write(f"- {propietario.strip()}")
         else:
             st.warning("❌ No encontrada en Base Catastral")
     else:
@@ -160,19 +151,21 @@ with col2:
 
 # --- Columna Izquierda (Grafo) ---
 with col1:
-    if st.session_state.matricula_buscada:
-        st.subheader(f"Grafo de Relaciones para: {st.session_state.matricula_buscada}")
-        db_credentials = st.secrets["db_credentials"]
-        
-        with st.spinner("Generando grafo..."):
-            nombre_archivo_html, mensaje = generar_grafo_matricula(st.session_state.matricula_buscada, db_credentials)
-        
-        st.write(mensaje)
+    if matricula_input: # El grafo siempre se genera basado en la caja de texto
+        if st.button("Generar Grafo") or matricula_buscada_url:
+            st.subheader(f"Grafo de Relaciones para: {matricula_input}")
+            db_credentials = st.secrets["db_credentials"]
+            
+            with st.spinner("Generando grafo..."):
+                nombre_archivo_html, mensaje = generar_grafo_matricula(matricula_input, db_credentials)
+            
+            st.write(mensaje)
 
-        if nombre_archivo_html:
-            with open(nombre_archivo_html, 'r', encoding='utf-8') as f:
-                source_code = f.read()
-                st.components.v1.html(source_code, height=820, scrolling=True)
-            os.remove(nombre_archivo_html)
+            if nombre_archivo_html:
+                with open(nombre_archivo_html, 'r', encoding='utf-8') as f:
+                    source_code = f.read()
+                    # Usamos una key única para forzar el refresco del componente
+                    st.components.v1.html(source_code, height=820, scrolling=True)
+                os.remove(nombre_archivo_html)
     else:
-        st.info("↑ Introduce una matrícula para comenzar.")
+        st.info("↑ Introduce una matrícula y presiona 'Generar Grafo' para comenzar.")
