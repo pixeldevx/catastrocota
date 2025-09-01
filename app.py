@@ -39,7 +39,6 @@ def obtener_info_catastral_batch(matriculas, db_params):
 
 def generar_grafo_para_streamlit(no_matricula_inicial, db_params):
     try:
-        # La consulta para obtener relaciones es la misma
         with psycopg2.connect(**db_params) as conn:
             query_recursiva = """
             WITH RECURSIVE familia_grafo AS (
@@ -75,10 +74,15 @@ def generar_grafo_para_streamlit(no_matricula_inicial, db_params):
             color = "#FF0000" if node_id == str(no_matricula_inicial).strip() else "#97C2FC"
             size = 40 if node_id == str(no_matricula_inicial).strip() else 25
             
-            # SOLUCIÓN: Al hacer clic, se actualiza la URL de la página principal de Streamlit
-            # Usamos `window.top.location.href` para salir del iframe
-            click_handler = f"window.top.location.href = '?matricula_buscada={no_matricula_inicial}&matricula_seleccionada={node_id}';"
-            net.add_node(node_id, label=node_id, title=f"Click para ver detalles de {node_id}", color=color, size=size, **{"onclick": click_handler})
+            # SOLUCIÓN: Usamos un enlace <a> con target="_top" para asegurar que la URL principal cambie
+            # El 'title' ahora es el popup HTML que SÍ debería funcionar con este método
+            propietarios_html = '<br>- '.join(info_catastral_nodos.get(node_id, {}).get('propietarios', []))
+            popup_html = (
+                f'<a href="?matricula_buscada={no_matricula_inicial}&matricula_seleccionada={node_id}" target="_top">'
+                f'Click para ver detalles de {node_id}'
+                f'</a>'
+            )
+            net.add_node(node_id, label=node_id, title=popup_html, color=color, size=size)
 
         net.add_edges(g.edges())
         
@@ -92,7 +96,7 @@ def generar_grafo_para_streamlit(no_matricula_inicial, db_params):
     except Exception as e:
         return None, f"❌ Ocurrió un error al generar el grafo: {e}"
 
-# --- FUNCIÓN PARA MOSTRAR LA TARJETA (sin cambios) ---
+
 def mostrar_tarjeta_info(info_dict):
     st.success("✅ ¡Encontrada en la Base Catastral!")
     st.markdown("---")
@@ -112,31 +116,30 @@ params = st.query_params
 matricula_buscada_url = params.get("matricula_buscada", "")
 matricula_seleccionada_url = params.get("matricula_seleccionada", "")
 
-# La caja de texto determina qué grafo se muestra. Su valor se mantiene desde la URL.
+# Usamos st.session_state para una gestión más robusta
+if "matricula_buscada" not in st.session_state:
+    st.session_state.matricula_buscada = matricula_buscada_url
+
+# El input se controla con el session_state
 matricula_input = st.text_input(
     "Introduce el número de matrícula para generar el grafo:",
-    value=matricula_buscada_url,
+    key="matricula_buscada",
     placeholder="Ej: 1037473"
 )
 
 # Creamos el diseño de dos columnas
-col_grafo, col_info = st.columns([3, 2]) # Damos más espacio al grafo
+col_grafo, col_info = st.columns([3, 2])
 
 # --- COLUMNA DERECHA: TARJETA DE INFORMACIÓN ---
 with col_info:
     st.subheader("🔍 Análisis Catastral")
     
-    # La matrícula a mostrar en la tarjeta tiene prioridad si fue seleccionada por clic
-    matricula_a_mostrar = matricula_seleccionada_url or matricula_input
+    # La matrícula a mostrar en la tarjeta tiene prioridad si fue seleccionada por clic (desde la URL)
+    matricula_a_mostrar = matricula_seleccionada_url or st.session_state.matricula_buscada
 
     if matricula_a_mostrar:
         db_credentials = st.secrets["db_credentials"]
-        # Usamos st.cache_data para no volver a buscar la misma info si no es necesario
-        @st.cache_data
-        def get_cached_info(matricula):
-            return obtener_info_catastral_batch([matricula], db_credentials)
-
-        info = get_cached_info(matricula_a_mostrar)
+        info = obtener_info_catastral_batch([matricula_a_mostrar], db_credentials)
         resultado_individual = info.get(matricula_a_mostrar.strip())
         
         if resultado_individual:
@@ -148,17 +151,12 @@ with col_info:
 
 # --- COLUMNA IZQUIERDA: GRAFO ---
 with col_grafo:
-    if st.button("Generar Grafo", type="primary"):
-        # Al hacer clic en el botón, actualizamos la URL para reflejar la nueva búsqueda
-        st.query_params["matricula_buscada"] = matricula_input
-        st.query_params["matricula_seleccionada"] = matricula_input # También la seleccionamos por defecto
-
-    # El grafo se genera si hay una matrícula en la URL (buscada o seleccionada)
-    if "matricula_buscada" in st.query_params and st.query_params["matricula_buscada"]:
+    if st.session_state.matricula_buscada:
         db_credentials = st.secrets["db_credentials"]
         
+        # Generamos el grafo basado en el estado de la sesión
         with st.spinner("Buscando relaciones y generando grafo..."):
-            nombre_archivo_html, mensaje = generar_grafo_para_streamlit(st.query_params["matricula_buscada"], db_credentials)
+            nombre_archivo_html, mensaje = generar_grafo_para_streamlit(st.session_state.matricula_buscada, db_credentials)
         
         st.info(mensaje)
 
@@ -168,4 +166,4 @@ with col_grafo:
                 st.components.v1.html(source_code, height=820, scrolling=True)
             os.remove(nombre_archivo_html)
     else:
-        st.info("↑ Introduce una matrícula y presiona 'Generar Grafo' para comenzar.")
+        st.info("↑ Introduce una matrícula para comenzar.")
