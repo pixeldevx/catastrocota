@@ -4,6 +4,7 @@ import pandas as pd
 import networkx as nx
 from pyvis.network import Network
 import os
+import json # Importamos la librería JSON
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(layout="wide")
@@ -45,7 +46,7 @@ def obtener_info_catastral_batch(matriculas, db_params):
 
 def generar_grafo_matricula(no_matricula_inicial, db_params):
     """
-    Genera un grafo donde al pasar el ratón o hacer clic en un nodo, se muestra un popup con la información catastral.
+    Genera un grafo donde al hacer clic en un nodo, se muestra un popup con la información catastral.
     """
     try:
         with psycopg2.connect(**db_params) as conn:
@@ -78,101 +79,62 @@ def generar_grafo_matricula(no_matricula_inicial, db_params):
         nodos_del_grafo = set(df_relaciones['padre']).union(set(df_relaciones['hija']))
         info_catastral_nodos = obtener_info_catastral_batch(nodos_del_grafo, db_params)
 
+        g = nx.from_pandas_edgelist(df_relaciones, 'padre', 'hija', create_using=nx.DiGraph())
         net = Network(height="800px", width="100%", directed=True, notebook=True, cdn_resources='in_line')
         
-        # Agregamos CSS personalizado para el popup de vis.js
-        # Esto asegura que el popup tenga un estilo nativo y visible
-        css_style = """
-        <style type="text/css">
-            .vis-tooltip {
-                border-radius: 8px !important;
-                padding: 10px !important;
-                background-color: #f8f9fa !important;
-                color: #343a40 !important;
-                box-shadow: 0 4px 8px rgba(0,0,0,0.1) !important;
-                border: 1px solid #dee2e6 !important;
-                max-width: 300px;
-                font-family: sans-serif;
-                font-size: 14px;
-            }
-            .vis-tooltip h5 {
-                margin-top: 0;
-                margin-bottom: 10px;
-                color: #007bff;
-                border-bottom: 1px solid #ced4da;
-                padding-bottom: 5px;
-            }
-            .vis-tooltip ul {
-                margin: 5px 0 0 0;
-                padding-left: 20px;
-            }
-            .vis-tooltip ul li {
-                margin-bottom: 2px;
-            }
-        </style>
-        """
-
-        for node_id_orig in nodos_del_grafo:
-            node_id = str(node_id_orig) # Aseguramos que sea string
+        for node in g.nodes():
+            node_id = str(node)
             info_nodo = info_catastral_nodos.get(node_id)
             
             if info_nodo:
-                propietarios_html = '</li><li>'.join(info_nodo['propietarios'])
+                propietarios_html = '<br>- '.join(info_nodo['propietarios'])
                 popup_html = (
-                    f'<h5>Info Catastral</h5>'
+                    f'<div style="text-align: left; font-family: sans-serif; padding: 10px;">'
+                    f'<h5 style="margin-top: 0; color: #007bff;">Info Catastral</h5>'
                     f'<b>Matrícula:</b> {node_id}<br>'
                     f'<b>Predial:</b> {info_nodo["numero_predial"]}<br>'
                     f'<b>Á. Terreno:</b> {info_nodo["area_terreno"]} m²<br>'
                     f'<b>Á. Construida:</b> {info_nodo["area_construida"]} m²<br>'
-                    f'<h6 style="margin-top: 10px; margin-bottom: 5px; color: #6c757d;">Propietarios:</h6><ul><li>{propietarios_html}</li></ul>'
+                    f'<b>Propietarios:</b><br>- {propietarios_html}'
+                    f'</div>'
                 )
             else:
-                popup_html = f'<h5>Info Catastral</h5><b>Matrícula:</b> {node_id}<br>(No encontrada en base catastral)'
+                popup_html = f"<b>Matrícula:</b> {node_id}<br>(Sin datos en base catastral)"
 
             color = "#FF0000" if node_id == str(no_matricula_inicial).strip() else "#97C2FC"
             size = 40 if node_id == str(no_matricula_inicial).strip() else 25
             
-            # --- USO DE `_html_title` para popups HTML en Pyvis/vis.js ---
             net.add_node(node_id, label=node_id, title=popup_html, color=color, size=size)
 
-        for edge in df_relaciones.itertuples():
-            net.add_edge(edge.padre, edge.hija)
+        net.add_edges(g.edges())
         
-        # Opciones de red (limpias y en formato JSON)
-        net.set_options("""
-        {
-          "layout": {
-            "hierarchical": {
-              "enabled": true,
-              "direction": "UD",
-              "sortMethod": "directed",
-              "levelSeparation": 150,
-              "nodeSpacing": 200
+        # --- CORRECCIÓN FINAL Y DEFINITIVA ---
+        # 1. Crear las opciones como un diccionario de Python
+        options = {
+            "layout": {
+                "hierarchical": {
+                    "enabled": True,
+                    "direction": "UD",
+                    "sortMethod": "directed",
+                    "levelSeparation": 150,
+                    "nodeSpacing": 200
+                }
+            },
+            "physics": {
+                "enabled": False
+            },
+            "interaction": {
+                "hover": True
             }
-          },
-          "physics": {
-            "enabled": false
-          },
-          "interaction": {
-            "hover": true,
-            "tooltipDelay": 100 // Retraso en ms para que aparezca el tooltip/popup al pasar el ratón
-          }
         }
-        """)
+        # 2. Convertir el diccionario a un string JSON perfecto usando la librería json
+        options_str = json.dumps(options)
+        
+        # 3. Pasar el string garantizado a set_options
+        net.set_options(options_str)
 
         nombre_archivo = f"grafo_{no_matricula_inicial}.html"
         net.save_graph(nombre_archivo)
-        
-        # Leemos el HTML generado y le inyectamos nuestro CSS
-        with open(nombre_archivo, 'r', encoding='utf-8') as f:
-            html_content = f.read()
-        
-        # Inyectamos el CSS justo antes del cierre de la etiqueta <head>
-        html_content = html_content.replace('</head>', css_style + '</head>')
-
-        with open(nombre_archivo, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-
         return nombre_archivo, f"✅ Se encontraron {len(df_relaciones)} relaciones de parentesco."
 
     except Exception as e:
