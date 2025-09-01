@@ -4,22 +4,16 @@ import pandas as pd
 import networkx as nx
 from pyvis.network import Network
 import os
-import json # Importamos la librería JSON
+import json
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(layout="wide")
 
-# --- FUNCIONES DE BASE DE DATOS ---
+# --- FUNCIONES DE BASE DE DATOS (sin cambios) ---
 
 def obtener_info_catastral_batch(matriculas, db_params):
-    """
-    Función optimizada: Busca detalles para una LISTA de matrículas en una sola consulta.
-    """
-    if not matriculas:
-        return {}
-    
+    if not matriculas: return {}
     matriculas_limpias = [str(m).strip() for m in matriculas]
-
     try:
         with psycopg2.connect(**db_params) as conn:
             query = """
@@ -28,7 +22,6 @@ def obtener_info_catastral_batch(matriculas, db_params):
                 WHERE TRIM("Matricula") = ANY(%(matriculas)s);
             """
             df = pd.read_sql_query(query, conn, params={'matriculas': matriculas_limpias})
-
             info_catastral = {}
             for matricula, group in df.groupby('Matricula'):
                 info_catastral[matricula] = {
@@ -38,17 +31,15 @@ def obtener_info_catastral_batch(matriculas, db_params):
                     "propietarios": [p.strip() for p in group['nombre'].tolist()]
                 }
             return info_catastral
-            
     except Exception as e:
-        st.error(f"Error al obtener datos catastrales en lote: {e}")
+        st.error(f"Error al obtener datos catastrales: {e}")
         return {}
 
+# --- FUNCIÓN DEL GRAFO (MODIFICADA PARA COMUNICACIÓN EXTERNA) ---
 
-def generar_grafo_matricula(no_matricula_inicial, db_params):
-    """
-    Genera un grafo donde al hacer clic en un nodo, se muestra un popup con la información catastral.
-    """
+def generar_grafo_para_streamlit(no_matricula_inicial, db_params):
     try:
+        # La consulta para obtener relaciones es la misma
         with psycopg2.connect(**db_params) as conn:
             query_recursiva = """
             WITH RECURSIVE familia_grafo AS (
@@ -74,81 +65,41 @@ def generar_grafo_matricula(no_matricula_inicial, db_params):
             df_relaciones = pd.read_sql_query(query_recursiva, conn, params={'start_node': str(no_matricula_inicial).strip()})
 
         if df_relaciones.empty:
-            return None, f"⚠️ No se encontraron relaciones de parentesco para '{no_matricula_inicial}'."
-
-        nodos_del_grafo = set(df_relaciones['padre']).union(set(df_relaciones['hija']))
-        info_catastral_nodos = obtener_info_catastral_batch(nodos_del_grafo, db_params)
+            return None, f"⚠️ No se encontraron relaciones para '{no_matricula_inicial}'."
 
         g = nx.from_pandas_edgelist(df_relaciones, 'padre', 'hija', create_using=nx.DiGraph())
         net = Network(height="800px", width="100%", directed=True, notebook=True, cdn_resources='in_line')
         
         for node in g.nodes():
             node_id = str(node)
-            info_nodo = info_catastral_nodos.get(node_id)
-            
-            if info_nodo:
-                propietarios_html = '<br>- '.join(info_nodo['propietarios'])
-                popup_html = (
-                    f'<div style="text-align: left; font-family: sans-serif; padding: 10px;">'
-                    f'<h5 style="margin-top: 0; color: #007bff;">Info Catastral</h5>'
-                    f'<b>Matrícula:</b> {node_id}<br>'
-                    f'<b>Predial:</b> {info_nodo["numero_predial"]}<br>'
-                    f'<b>Á. Terreno:</b> {info_nodo["area_terreno"]} m²<br>'
-                    f'<b>Á. Construida:</b> {info_nodo["area_construida"]} m²<br>'
-                    f'<b>Propietarios:</b><br>- {propietarios_html}'
-                    f'</div>'
-                )
-            else:
-                popup_html = f"<b>Matrícula:</b> {node_id}<br>(Sin datos en base catastral)"
-
             color = "#FF0000" if node_id == str(no_matricula_inicial).strip() else "#97C2FC"
             size = 40 if node_id == str(no_matricula_inicial).strip() else 25
             
-            net.add_node(node_id, label=node_id, title=popup_html, color=color, size=size)
+            # SOLUCIÓN: Al hacer clic, se actualiza la URL de la página principal de Streamlit
+            # Usamos `window.top.location.href` para salir del iframe
+            click_handler = f"window.top.location.href = '?matricula_buscada={no_matricula_inicial}&matricula_seleccionada={node_id}';"
+            net.add_node(node_id, label=node_id, title=f"Click para ver detalles de {node_id}", color=color, size=size, **{"onclick": click_handler})
 
         net.add_edges(g.edges())
         
-        # --- CORRECCIÓN FINAL Y DEFINITIVA ---
-        # 1. Crear las opciones como un diccionario de Python
-        options = {
-            "layout": {
-                "hierarchical": {
-                    "enabled": True,
-                    "direction": "UD",
-                    "sortMethod": "directed",
-                    "levelSeparation": 150,
-                    "nodeSpacing": 200
-                }
-            },
-            "physics": {
-                "enabled": False
-            },
-            "interaction": {
-                "hover": True
-            }
-        }
-        # 2. Convertir el diccionario a un string JSON perfecto usando la librería json
-        options_str = json.dumps(options)
-        
-        # 3. Pasar el string garantizado a set_options
-        net.set_options(options_str)
+        options = {"layout": {"hierarchical": {"enabled": True, "direction": "UD", "sortMethod": "directed", "levelSeparation": 150, "nodeSpacing": 200}}, "physics": {"enabled": False}}
+        net.set_options(json.dumps(options))
 
         nombre_archivo = f"grafo_{no_matricula_inicial}.html"
         net.save_graph(nombre_archivo)
-        return nombre_archivo, f"✅ Se encontraron {len(df_relaciones)} relaciones de parentesco."
+        return nombre_archivo, f"✅ Se encontraron {len(df_relaciones)} relaciones."
 
     except Exception as e:
         return None, f"❌ Ocurrió un error al generar el grafo: {e}"
 
+# --- FUNCIÓN PARA MOSTRAR LA TARJETA (sin cambios) ---
 def mostrar_tarjeta_info(info_dict):
     st.success("✅ ¡Encontrada en la Base Catastral!")
     st.markdown("---")
     st.metric(label="Número Predial", value=info_dict['numero_predial'])
-    
     col1, col2 = st.columns(2)
     col1.metric(label="Área Terreno (m²)", value=info_dict['area_terreno'])
     col2.metric(label="Área Construida (m²)", value=info_dict['area_construida'])
-    
     with st.expander(f"Propietarios ({len(info_dict['propietarios'])})"):
         for propietario in info_dict['propietarios']:
             st.write(f"- {propietario}")
@@ -156,41 +107,58 @@ def mostrar_tarjeta_info(info_dict):
 # --- INTERFAZ GRÁFICA Y LÓGICA PRINCIPAL ---
 st.title("Visor Interactivo de Matrículas 🕸️")
 
+# Leemos los parámetros de la URL para mantener el estado
+params = st.query_params
+matricula_buscada_url = params.get("matricula_buscada", "")
+matricula_seleccionada_url = params.get("matricula_seleccionada", "")
+
+# La caja de texto determina qué grafo se muestra. Su valor se mantiene desde la URL.
 matricula_input = st.text_input(
-    "Introduce el número de matrícula:",
+    "Introduce el número de matrícula para generar el grafo:",
+    value=matricula_buscada_url,
     placeholder="Ej: 1037473"
 )
 
-col1_btn, col2_btn, _ = st.columns([1, 2, 3])
+# Creamos el diseño de dos columnas
+col_grafo, col_info = st.columns([3, 2]) # Damos más espacio al grafo
 
-with col1_btn:
-    generar_clicked = st.button("Generar Grafo", type="primary")
+# --- COLUMNA DERECHA: TARJETA DE INFORMACIÓN ---
+with col_info:
+    st.subheader("🔍 Análisis Catastral")
+    
+    # La matrícula a mostrar en la tarjeta tiene prioridad si fue seleccionada por clic
+    matricula_a_mostrar = matricula_seleccionada_url or matricula_input
 
-with col2_btn:
-    analisis_clicked = st.button("Análisis Catastral")
-
-if analisis_clicked:
-    if matricula_input:
-        st.subheader(f"🔍 Análisis Catastral para: {matricula_input}")
+    if matricula_a_mostrar:
         db_credentials = st.secrets["db_credentials"]
-        info = obtener_info_catastral_batch([matricula_input], db_credentials)
-        resultado_individual = info.get(matricula_input.strip())
+        # Usamos st.cache_data para no volver a buscar la misma info si no es necesario
+        @st.cache_data
+        def get_cached_info(matricula):
+            return obtener_info_catastral_batch([matricula], db_credentials)
+
+        info = get_cached_info(matricula_a_mostrar)
+        resultado_individual = info.get(matricula_a_mostrar.strip())
         
         if resultado_individual:
             mostrar_tarjeta_info(resultado_individual)
         else:
-            st.error("❌ No se encontró la matrícula en la base catastral.")
-            st.info("Verifica que no haya espacios en blanco o errores en el número.")
+            st.warning("No se encontró información catastral para la matrícula seleccionada.")
     else:
-        st.warning("Por favor, introduce una matrícula para realizar el análisis.")
+        st.info("Busca una matrícula o haz clic en un nodo del grafo para ver sus detalles aquí.")
 
-if generar_clicked:
-    if matricula_input:
-        st.subheader(f"Grafo de Relaciones para: {matricula_input}")
+# --- COLUMNA IZQUIERDA: GRAFO ---
+with col_grafo:
+    if st.button("Generar Grafo", type="primary"):
+        # Al hacer clic en el botón, actualizamos la URL para reflejar la nueva búsqueda
+        st.query_params["matricula_buscada"] = matricula_input
+        st.query_params["matricula_seleccionada"] = matricula_input # También la seleccionamos por defecto
+
+    # El grafo se genera si hay una matrícula en la URL (buscada o seleccionada)
+    if "matricula_buscada" in st.query_params and st.query_params["matricula_buscada"]:
         db_credentials = st.secrets["db_credentials"]
         
-        with st.spinner("Buscando relaciones y datos catastrales..."):
-            nombre_archivo_html, mensaje = generar_grafo_matricula(matricula_input, db_credentials)
+        with st.spinner("Buscando relaciones y generando grafo..."):
+            nombre_archivo_html, mensaje = generar_grafo_para_streamlit(st.query_params["matricula_buscada"], db_credentials)
         
         st.info(mensaje)
 
@@ -200,4 +168,4 @@ if generar_clicked:
                 st.components.v1.html(source_code, height=820, scrolling=True)
             os.remove(nombre_archivo_html)
     else:
-        st.warning("Por favor, introduce una matrícula para generar el grafo.")
+        st.info("↑ Introduce una matrícula y presiona 'Generar Grafo' para comenzar.")
