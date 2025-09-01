@@ -3,3 +3,5 @@ pandas
 networkx
 pyvis
 streamlit
+folium
+streamlit-folium
