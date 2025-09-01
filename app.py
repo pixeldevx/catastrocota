@@ -34,8 +34,8 @@ def obtener_info_catastral_batch(matriculas, db_params):
         st.error(f"Error al obtener datos catastrales: {e}")
         return {}
 
-# --- FUNCIÓN DEL GRAFO (MODIFICADA PARA DEVOLVER DATOS) ---
-def generar_grafo_y_datos(no_matricula_inicial, db_params):
+# --- FUNCIÓN DEL GRAFO (MODIFICADA PARA LA NUEVA INTERACTIVIDAD) ---
+def generar_grafo_interactivo(no_matricula_inicial, db_params):
     try:
         with psycopg2.connect(**db_params) as conn:
             query_recursiva = """
@@ -62,19 +62,33 @@ def generar_grafo_y_datos(no_matricula_inicial, db_params):
             df_relaciones = pd.read_sql_query(query_recursiva, conn, params={'start_node': str(no_matricula_inicial).strip()})
 
         if df_relaciones.empty:
-            return None, None, f"⚠️ No se encontraron relaciones para '{no_matricula_inicial}'."
+            return None, f"⚠️ No se encontraron relaciones para '{no_matricula_inicial}'."
 
-        nodos_del_grafo = sorted(list(set(df_relaciones['padre']).union(set(df_relaciones['hija']))))
+        nodos_del_grafo = set(df_relaciones['padre']).union(set(df_relaciones['hija']))
         info_catastral_nodos = obtener_info_catastral_batch(nodos_del_grafo, db_params)
 
         g = nx.from_pandas_edgelist(df_relaciones, 'padre', 'hija', create_using=nx.DiGraph())
-        net = Network(height="600px", width="100%", directed=True, notebook=True, cdn_resources='in_line')
+        net = Network(height="800px", width="100%", directed=True, notebook=True, cdn_resources='in_line')
         
-        for node_id in nodos_del_grafo:
-            color = "#FF0000" if node_id == str(no_matricula_inicial).strip() else "#97C2FC"
-            size = 40 if node_id == str(no_matricula_inicial).strip() else 25
-            title = f"Matrícula: {node_id}"
-            net.add_node(node_id, label=node_id, title=title, color=color, size=size)
+        for node_id in g.nodes():
+            info_nodo = info_catastral_nodos.get(str(node_id))
+            
+            # Asignamos color y tooltip según si se encontró la info catastral
+            if info_nodo:
+                title = f"Matrícula: {node_id}\nEstado: Se encuentra en la base catastral."
+                color = "#28a745" # Verde
+            else:
+                title = f"Matrícula: {node_id}\nEstado: No se encuentra en la base catastral."
+                color = "#ffc107" # Amarillo (Alerta)
+
+            # La matrícula principal siempre será roja y más grande
+            if str(node_id) == str(no_matricula_inicial).strip():
+                color = "#dc3545" # Rojo
+                size = 40
+            else:
+                size = 25
+            
+            net.add_node(str(node_id), label=str(node_id), title=title, color=color, size=size)
 
         net.add_edges(g.edges())
         
@@ -83,12 +97,11 @@ def generar_grafo_y_datos(no_matricula_inicial, db_params):
 
         nombre_archivo = f"grafo_{no_matricula_inicial}.html"
         net.save_graph(nombre_archivo)
-        return nombre_archivo, (nodos_del_grafo, info_catastral_nodos), f"✅ Se encontraron {len(df_relaciones)} relaciones."
+        return nombre_archivo, f"✅ Grafo interactivo generado con {len(g.nodes())} nodos."
 
     except Exception as e:
-        return None, None, f"❌ Ocurrió un error al generar el grafo: {e}"
+        return None, f"❌ Ocurrió un error al generar el grafo: {e}"
 
-# --- FUNCIÓN PARA MOSTRAR LA TARJETA (sin cambios) ---
 def mostrar_tarjeta_info(info_dict):
     st.success("✅ ¡Encontrada en la Base Catastral!")
     st.metric(label="Número Predial", value=info_dict['numero_predial'])
@@ -99,8 +112,8 @@ def mostrar_tarjeta_info(info_dict):
         for propietario in info_dict['propietarios']:
             st.write(f"- {propietario}")
 
-# --- INTERFAZ GRÁFICA Y LÓGICA PRINCIPAL (REESTRUCTURADA) ---
-st.title("Visor y Analizador de Matrículas 🕸️")
+# --- INTERFAZ GRÁFICA Y LÓGICA PRINCIPAL ---
+st.title("Visor Interactivo de Matrículas 🕸️")
 
 matricula_input = st.text_input(
     "Introduce el número de matrícula:",
@@ -110,19 +123,18 @@ matricula_input = st.text_input(
 col1_btn, col2_btn, _ = st.columns([1, 2, 3])
 
 with col1_btn:
-    generar_clicked = st.button("Generar Grafo y Reporte", type="primary")
+    generar_clicked = st.button("Generar Grafo Interactivo", type="primary")
 
 with col2_btn:
     analisis_clicked = st.button("Análisis Catastral Individual")
 
-# Lógica para el análisis individual
+# Lógica para el análisis individual (se mantiene igual)
 if analisis_clicked:
     if matricula_input:
         st.subheader(f"🔍 Análisis Catastral para: {matricula_input}")
         db_credentials = st.secrets["db_credentials"]
         info = obtener_info_catastral_batch([matricula_input], db_credentials)
         resultado_individual = info.get(matricula_input.strip())
-        
         if resultado_individual:
             mostrar_tarjeta_info(resultado_individual)
         else:
@@ -130,38 +142,19 @@ if analisis_clicked:
     else:
         st.warning("Por favor, introduce una matrícula para el análisis.")
 
-# Lógica para generar el grafo y el reporte completo
+# Lógica para generar el grafo interactivo
 if generar_clicked:
     if matricula_input:
         db_credentials = st.secrets["db_credentials"]
-        
-        with st.spinner("Buscando relaciones y generando reporte..."):
-            nombre_archivo_html, datos_reporte, mensaje = generar_grafo_y_datos(matricula_input, db_credentials)
+        with st.spinner("Generando grafo con códigos de color..."):
+            nombre_archivo_html, mensaje = generar_grafo_interactivo(matricula_input, db_credentials)
         
         st.info(mensaje)
 
-        # 1. Mostrar el Grafo
         if nombre_archivo_html:
-            st.subheader("Grafo de Relaciones")
             with open(nombre_archivo_html, 'r', encoding='utf-8') as f:
                 source_code = f.read()
-                st.components.v1.html(source_code, height=600, scrolling=True)
+                st.components.v1.html(source_code, height=800, scrolling=True)
             os.remove(nombre_archivo_html)
-
-        # 2. Mostrar el Reporte de Nodos
-        if datos_reporte:
-            nodos, info_nodos = datos_reporte
-            st.markdown("---")
-            st.subheader("🔍 Reporte de Nodos del Grafo")
-            st.write(f"Se encontró información catastral para **{len(info_nodos)}** de los **{len(nodos)}** nodos del grafo.")
-
-            for nodo in nodos:
-                info_nodo = info_nodos.get(nodo)
-                if info_nodo:
-                    with st.expander(f"✅ Matrícula: {nodo} (Con datos catastrales)"):
-                        mostrar_tarjeta_info(info_nodo)
-                else:
-                    with st.expander(f"⚠️ Matrícula: {nodo} (Sin datos catastrales)"):
-                        st.warning("No se encontró información para esta matrícula en la base catastral.")
     else:
         st.warning("Por favor, introduce una matrícula para generar el grafo.")
