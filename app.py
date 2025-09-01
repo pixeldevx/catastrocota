@@ -75,13 +75,13 @@ def generar_grafo_interactivo(no_matricula_inicial, db_params):
 
             if info_nodo:
                 title = f"Matrícula: {node_id}\nEstado: Se encuentra en la base catastral."
-                color = "#28a745" # Verde
+                color = "#28a745"
             else:
                 title = f"Matrícula: {node_id}\nEstado: No se encuentra en la base catastral."
-                color = "#ffc107" # Amarillo (Alerta)
+                color = "#ffc107"
 
             if str(node_id) == str(no_matricula_inicial).strip():
-                color = "#dc3545" # Rojo
+                color = "#dc3545"
                 size = 40
             else:
                 size = 25
@@ -111,81 +111,88 @@ def mostrar_tarjeta_info(info_dict):
             st.write(f"- {propietario}")
 
 # --- INTERFAZ GRÁFICA Y LÓGICA PRINCIPAL ---
-st.title("Visor Interactivo de Matrículas 🕸️")
+st.title("Panel de Análisis de Matrículas 🕸️")
 
-matricula_input = st.text_input(
-    "Introduce el número de matrícula:",
-    placeholder="Ej: 1037473"
-)
+# Inicializar el estado de la sesión para mantener los valores
+if 'matricula_grafo' not in st.session_state:
+    st.session_state.matricula_grafo = ""
+if 'matricula_analisis' not in st.session_state:
+    st.session_state.matricula_analisis = ""
+if 'mostrar_analisis' not in st.session_state:
+    st.session_state.mostrar_analisis = False
 
-col1_btn, col2_btn, _ = st.columns([1, 2, 3])
+# Layout de dos columnas principales
+col_grafo, col_analisis = st.columns([2, 1])
 
-with col1_btn:
-    generar_clicked = st.button("Generar Grafo Interactivo", type="primary")
+# --- Columna Izquierda: Controles del Grafo y Visualización ---
+with col_grafo:
+    st.subheader("Visualizador de Grafo de Relaciones")
+    
+    matricula_input_grafo = st.text_input(
+        "Introduce la matrícula para generar el grafo:",
+        key="input_grafo",
+        placeholder="Ej: 1037473"
+    )
 
-with col2_btn:
-    analisis_clicked = st.button("Análisis Catastral Individual")
-
-if analisis_clicked:
-    if matricula_input:
-        st.subheader(f"🔍 Análisis Catastral para: {matricula_input}")
-        db_credentials = st.secrets["db_credentials"]
-        info = obtener_info_catastral_batch([matricula_input], db_credentials)
-        resultado_individual = info.get(matricula_input.strip())
-        if resultado_individual:
-            mostrar_tarjeta_info(resultado_individual)
+    if st.button("Generar Grafo Interactivo", type="primary"):
+        if matricula_input_grafo:
+            st.session_state.matricula_grafo = matricula_input_grafo
+            # Sincroniza el análisis con la nueva búsqueda del grafo
+            st.session_state.matricula_analisis = matricula_input_grafo
+            st.session_state.mostrar_analisis = True
         else:
-            st.error("❌ No se encontró la matrícula en la base catastral.")
-    else:
-        st.warning("Por favor, introduce una matrícula para el análisis.")
+            st.warning("Por favor, introduce una matrícula para generar el grafo.")
 
-if generar_clicked:
-    if matricula_input:
+    # Mostrar el grafo si se ha buscado una matrícula
+    if st.session_state.matricula_grafo:
         db_credentials = st.secrets["db_credentials"]
         with st.spinner("Generando grafo con códigos de color..."):
-            nombre_archivo_html, mensaje = generar_grafo_interactivo(matricula_input, db_credentials)
-
+            nombre_archivo_html, mensaje = generar_grafo_interactivo(st.session_state.matricula_grafo, db_credentials)
+        
         st.info(mensaje)
 
         if nombre_archivo_html:
-            # --- NUEVA SECCIÓN: LEYENDA DE COLORES ---
-            st.subheader("Leyenda de Colores")
+            # Leyenda de colores
             st.markdown("""
-                <style>
-                .legend-color {
-                    display: inline-block;
-                    width: 15px;
-                    height: 15px;
-                    border-radius: 50%;
-                    margin-right: 8px;
-                    vertical-align: middle;
-                    border: 1px solid #555;
-                }
-                .legend-item {
-                    display: flex;
-                    align-items: center;
-                    margin-bottom: 5px;
-                }
-                </style>
-                <div class="legend-item">
-                    <span class="legend-color" style="background-color: #dc3545;"></span>
-                    Matrícula Buscada
-                </div>
-                <div class="legend-item">
-                    <span class="legend-color" style="background-color: #28a745;"></span>
-                    Encontrada en Base Catastral
-                </div>
-                <div class="legend-item">
-                    <span class="legend-color" style="background-color: #ffc107;"></span>
-                    No Encontrada en Base Catastral
-                </div>
+                **Leyenda:** <span style="display:inline-block; width:12px; height:12px; border-radius:50%; background-color:#dc3545; vertical-align:middle;"></span> Matrícula Buscada &nbsp;
+                <span style="display:inline-block; width:12px; height:12px; border-radius:50%; background-color:#28a745; vertical-align:middle;"></span> En Base Catastral &nbsp;
+                <span style="display:inline-block; width:12px; height:12px; border-radius:50%; background-color:#ffc107; vertical-align:middle;"></span> No en Base Catastral
             """, unsafe_allow_html=True)
-            st.markdown("---") # Separador visual
-
-            # --- RENDERIZADO DEL GRAFO ---
+            
             with open(nombre_archivo_html, 'r', encoding='utf-8') as f:
                 source_code = f.read()
                 st.components.v1.html(source_code, height=800, scrolling=True)
             os.remove(nombre_archivo_html)
+
+# --- Columna Derecha: Análisis Catastral ---
+with col_analisis:
+    st.subheader("Análisis Catastral Individual")
+    
+    # El valor por defecto del input de análisis es la última matrícula analizada
+    matricula_input_analisis = st.text_input(
+        "Matrícula a analizar:",
+        value=st.session_state.matricula_analisis,
+        key="input_analisis"
+    )
+    
+    if st.button("Analizar"):
+        if matricula_input_analisis:
+            st.session_state.matricula_analisis = matricula_input_analisis
+            st.session_state.mostrar_analisis = True
+        else:
+            st.warning("Introduce una matrícula para analizar.")
+            st.session_state.mostrar_analisis = False
+            
+    # Mostrar la tarjeta de análisis si corresponde
+    if st.session_state.mostrar_analisis and st.session_state.matricula_analisis:
+        st.markdown("---")
+        db_credentials = st.secrets["db_credentials"]
+        info = obtener_info_catastral_batch([st.session_state.matricula_analisis], db_credentials)
+        resultado_individual = info.get(st.session_state.matricula_analisis.strip())
+        
+        if resultado_individual:
+            mostrar_tarjeta_info(resultado_individual)
+        else:
+            st.error(f"❌ No se encontró la matrícula '{st.session_state.matricula_analisis}' en la base catastral.")
     else:
-        st.warning("Por favor, introduce una matrícula para generar el grafo.")
+        st.info("Introduce una matrícula y presiona 'Analizar' para ver sus detalles.")
