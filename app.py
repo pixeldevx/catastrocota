@@ -13,27 +13,31 @@ st.set_page_config(layout="wide")
 def obtener_info_catastral_batch(matriculas, db_params):
     """
     Función optimizada: Busca detalles para una LISTA de matrículas en una sola consulta.
-    Devuelve un diccionario mapeando cada matrícula a sus datos.
+    Limpia los datos de matrícula para asegurar la coincidencia.
     """
     if not matriculas:
         return {}
+    
+    # Limpiamos la lista de matrículas de cualquier espacio en blanco
+    matriculas_limpias = [str(m).strip() for m in matriculas]
+
     try:
         with psycopg2.connect(**db_params) as conn:
+            # La consulta ahora limpia los espacios de la columna de la BD también
             query = """
-                SELECT "Matricula", numero_predial, area_terreno, area_construida, nombre 
+                SELECT TRIM("Matricula") as "Matricula", numero_predial, area_terreno, area_construida, nombre 
                 FROM public.informacioncatastral 
-                WHERE "Matricula" = ANY(%(matriculas)s);
+                WHERE TRIM("Matricula") = ANY(%(matriculas)s);
             """
-            df = pd.read_sql_query(query, conn, params={'matriculas': list(matriculas)})
+            df = pd.read_sql_query(query, conn, params={'matriculas': matriculas_limpias})
 
-            # Procesamos los resultados para agrupar por matrícula
             info_catastral = {}
             for matricula, group in df.groupby('Matricula'):
                 info_catastral[matricula] = {
                     "numero_predial": group['numero_predial'].iloc[0],
                     "area_terreno": group['area_terreno'].iloc[0],
                     "area_construida": group['area_construida'].iloc[0],
-                    "propietarios": group['nombre'].tolist()
+                    "propietarios": [p.strip() for p in group['nombre'].tolist()]
                 }
             return info_catastral
             
@@ -44,69 +48,63 @@ def obtener_info_catastral_batch(matriculas, db_params):
 
 def generar_grafo_matricula(no_matricula_inicial, db_params):
     """
-    Genera un grafo donde los tooltips de los nodos contienen la información catastral.
+    Genera un grafo donde los tooltips de los nodos contienen la información catastral en HTML.
     """
     try:
-        # 1. Obtenemos la estructura del grafo (las relaciones)
         with psycopg2.connect(**db_params) as conn:
             query_recursiva = """
             WITH RECURSIVE familia_grafo AS (
-                SELECT id FROM public.matriculas WHERE no_matricula_inmobiliaria = %(start_node)s
+                SELECT id, no_matricula_inmobiliaria FROM public.matriculas WHERE TRIM(no_matricula_inmobiliaria) = %(start_node)s
                 UNION
                 SELECT
-                    CASE
-                        WHEN r.matricula_padre_id = fg.id THEN r.matricula_hija_id
-                        ELSE r.matricula_padre_id
-                    END
+                    CASE WHEN r.matricula_padre_id = fg.id THEN m_hija.id ELSE m_padre.id END,
+                    CASE WHEN r.matricula_padre_id = fg.id THEN m_hija.no_matricula_inmobiliaria ELSE m_padre.no_matricula_inmobiliaria END
                 FROM public.relacionesmatriculas r
                 JOIN familia_grafo fg ON r.matricula_padre_id = fg.id OR r.matricula_hija_id = fg.id
+                JOIN public.matriculas m_padre ON r.matricula_padre_id = m_padre.id
+                JOIN public.matriculas m_hija ON r.matricula_hija_id = m_hija.id
             )
-            SELECT
-                padre.no_matricula_inmobiliaria AS padre,
-                hija.no_matricula_inmobiliaria AS hija
+            SELECT DISTINCT
+                TRIM(padre.no_matricula_inmobiliaria) AS padre,
+                TRIM(hija.no_matricula_inmobiliaria) AS hija
             FROM public.relacionesmatriculas rel
             JOIN public.matriculas padre ON rel.matricula_padre_id = padre.id
             JOIN public.matriculas hija ON rel.matricula_hija_id = hija.id
-            WHERE rel.matricula_padre_id IN (SELECT id FROM familia_grafo)
-            AND rel.matricula_hija_id IN (SELECT id FROM familia_grafo);
+            WHERE padre.id IN (SELECT id FROM familia_grafo)
+              AND hija.id IN (SELECT id FROM familia_grafo);
             """
-            df_relaciones = pd.read_sql_query(query_recursiva, conn, params={'start_node': no_matricula_inicial})
+            df_relaciones = pd.read_sql_query(query_recursiva, conn, params={'start_node': str(no_matricula_inicial).strip()})
 
         if df_relaciones.empty:
             return None, f"⚠️ No se encontraron relaciones de parentesco para '{no_matricula_inicial}'."
 
-        # 2. Recolectamos TODOS los nodos únicos que aparecerán en el grafo
         nodos_del_grafo = set(df_relaciones['padre']).union(set(df_relaciones['hija']))
-
-        # 3. Obtenemos la información catastral para todos esos nodos EN UN SOLO VIAJE a la BD
         info_catastral_nodos = obtener_info_catastral_batch(nodos_del_grafo, db_params)
 
-        # 4. Construimos el grafo y los tooltips dinámicos
         g = nx.from_pandas_edgelist(df_relaciones, 'padre', 'hija', create_using=nx.DiGraph())
         net = Network(height="800px", width="100%", directed=True, notebook=True, cdn_resources='in_line')
         net.from_nx(g)
 
         for node in net.nodes:
             node_id = str(node["id"])
-            
-            # --- LÓGICA DE TOOLTIPS INTELIGENTES ---
             info_nodo = info_catastral_nodos.get(node_id)
+            
             if info_nodo:
-                # Usamos \n para saltos de línea en el tooltip
-                propietarios_str = '\n- '.join(info_nodo['propietarios'])
-                tooltip_text = (
-                    f"--- Info Catastral ---\n"
-                    f"Matrícula: {node_id}\n"
-                    f"Predial: {info_nodo['numero_predial']}\n"
-                    f"Á. Terreno: {info_nodo['area_terreno']} m²\n"
-                    f"Á. Construida: {info_nodo['area_construida']} m²\n"
-                    f"Propietarios:\n- {propietarios_str}"
+                # --- TOOLTIP CON FORMATO HTML ---
+                propietarios_html = '<br>- '.join(info_nodo['propietarios'])
+                tooltip_html = (
+                    f"<b>--- Info Catastral ---</b><br>"
+                    f"<b>Matrícula:</b> {node_id}<br>"
+                    f"<b>Predial:</b> {info_nodo['numero_predial']}<br>"
+                    f"<b>Á. Terreno:</b> {info_nodo['area_terreno']} m²<br>"
+                    f"<b>Á. Construida:</b> {info_nodo['area_construida']} m²<br>"
+                    f"<b>Propietarios:</b><br>- {propietarios_html}"
                 )
-                node["title"] = tooltip_text
+                node["title"] = tooltip_html
             else:
-                node["title"] = f"Matrícula: {node_id}\n(Sin datos en base catastral)"
+                node["title"] = f"<b>Matrícula:</b> {node_id}<br>(Sin datos en base catastral)"
 
-            if node_id == str(no_matricula_inicial):
+            if node_id == str(no_matricula_inicial).strip():
                 node["color"] = "#FF0000"
                 node["size"] = 40
         
@@ -126,13 +124,42 @@ def generar_grafo_matricula(no_matricula_inicial, db_params):
 st.title("Visor Interactivo de Matrículas 🕸️")
 
 matricula_input = st.text_input(
-    "Introduce el número de matrícula para generar el grafo:",
-    placeholder="Ej: 1037472"
+    "Introduce el número de matrícula:",
+    placeholder="Ej: 1037473"
 )
 
-if st.button("Generar Grafo"):
+# Creamos columnas para los botones
+col1_btn, col2_btn, _ = st.columns([1, 2, 3])
+
+with col1_btn:
+    generar_clicked = st.button("Generar Grafo", type="primary")
+
+with col2_btn:
+    probar_clicked = st.button("Probar Búsqueda Catastral")
+
+# --- LÓGICA DE LA HERRAMIENTA DE DIAGNÓSTICO ---
+if probar_clicked:
     if matricula_input:
-        # El grafo se muestra ocupando todo el espacio principal
+        st.subheader(f"🔍 Resultado de la búsqueda para: {matricula_input}")
+        db_credentials = st.secrets["db_credentials"]
+        # Usamos la misma función batch, pero con una sola matrícula
+        info = obtener_info_catastral_batch([matricula_input], db_credentials)
+        
+        resultado_individual = info.get(matricula_input.strip())
+        
+        if resultado_individual:
+            st.success("✅ ¡Encontrada en la Base Catastral!")
+            st.json(resultado_individual)
+        else:
+            st.error("❌ No se encontró la matrícula en la base catastral.")
+            st.info("Verifica que no haya espacios en blanco o errores en el número.")
+    else:
+        st.warning("Por favor, introduce una matrícula para probar la búsqueda.")
+
+
+# --- LÓGICA DE GENERACIÓN DEL GRAFO ---
+if generar_clicked:
+    if matricula_input:
         st.subheader(f"Grafo de Relaciones para: {matricula_input}")
         db_credentials = st.secrets["db_credentials"]
         
@@ -147,4 +174,4 @@ if st.button("Generar Grafo"):
                 st.components.v1.html(source_code, height=820, scrolling=True)
             os.remove(nombre_archivo_html)
     else:
-        st.warning("Por favor, introduce un número de matrícula.")
+        st.warning("Por favor, introduce una matrícula para generar el grafo.")
