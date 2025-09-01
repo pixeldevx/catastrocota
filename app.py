@@ -12,8 +12,8 @@ st.set_page_config(layout="wide")
 
 def obtener_info_catastral_batch(matriculas, db_params):
     """
-    Busca detalles para una LISTA de matrículas en una sola consulta.
-    Limpia los datos para asegurar la coincidencia.
+    Función optimizada: Busca detalles para una LISTA de matrículas en una sola consulta.
+    Limpia los datos de matrícula para asegurar la coincidencia.
     """
     if not matriculas:
         return {}
@@ -49,7 +49,6 @@ def generar_grafo_matricula(no_matricula_inicial, db_params):
     Genera un grafo donde los tooltips de los nodos contienen la información catastral en HTML.
     """
     try:
-        # ... (El resto de la función del grafo no necesita cambios) ...
         with psycopg2.connect(**db_params) as conn:
             query_recursiva = """
             WITH RECURSIVE familia_grafo AS (
@@ -89,14 +88,17 @@ def generar_grafo_matricula(no_matricula_inicial, db_params):
             info_nodo = info_catastral_nodos.get(node_id)
             
             if info_nodo:
+                # --- CORRECCIÓN: TOOLTIP CON FORMATO HTML ESTRUCTURADO ---
                 propietarios_html = '<br>- '.join(info_nodo['propietarios'])
                 tooltip_html = (
-                    f"<b>--- Info Catastral ---</b><br>"
-                    f"<b>Matrícula:</b> {node_id}<br>"
-                    f"<b>Predial:</b> {info_nodo['numero_predial']}<br>"
-                    f"<b>Á. Terreno:</b> {info_nodo['area_terreno']} m²<br>"
-                    f"<b>Á. Construida:</b> {info_nodo['area_construida']} m²<br>"
-                    f"<b>Propietarios:</b><br>- {propietarios_html}"
+                    f'<div style="text-align: left; font-family: sans-serif; padding: 10px; border-radius: 5px; background-color: #f0f0f0; color: black;">'
+                    f'<h4 style="margin: 0; border-bottom: 1px solid #ccc;">Info Catastral</h4>'
+                    f'<b>Matrícula:</b> {node_id}<br>'
+                    f'<b>Predial:</b> {info_nodo["numero_predial"]}<br>'
+                    f'<b>Á. Terreno:</b> {info_nodo["area_terreno"]} m²<br>'
+                    f'<b>Á. Construida:</b> {info_nodo["area_construida"]} m²<br>'
+                    f'<b>Propietarios:</b><br>- {propietarios_html}'
+                    f'</div>'
                 )
                 node["title"] = tooltip_html
             else:
@@ -112,13 +114,12 @@ def generar_grafo_matricula(no_matricula_inicial, db_params):
 
         nombre_archivo = f"grafo_{no_matricula_inicial}.html"
         net.save_graph(nombre_archivo)
-        return nombre_archivo, f"✅ Se encontraron {len(df_relaciones)} relaciones."
+        return nombre_archivo, f"✅ Se encontraron {len(df_relaciones)} relaciones de parentesco."
 
     except Exception as e:
         return None, f"❌ Ocurrió un error al generar el grafo: {e}"
 
 
-# --- NUEVA FUNCIÓN PARA MOSTRAR LA TARJETA ---
 def mostrar_tarjeta_info(info_dict):
     """
     Toma un diccionario con información catastral y lo muestra en una tarjeta de Streamlit.
@@ -135,7 +136,6 @@ def mostrar_tarjeta_info(info_dict):
         for propietario in info_dict['propietarios']:
             st.write(f"- {propietario}")
 
-
 # --- INTERFAZ GRÁFICA Y LÓGICA PRINCIPAL ---
 st.title("Visor Interactivo de Matrículas 🕸️")
 
@@ -150,27 +150,24 @@ with col1_btn:
     generar_clicked = st.button("Generar Grafo", type="primary")
 
 with col2_btn:
-    probar_clicked = st.button("Probar Búsqueda Catastral")
+    # --- CORRECCIÓN: BOTÓN RENOMBRADO ---
+    analisis_clicked = st.button("Análisis Catastral")
 
-# --- LÓGICA DE LA HERRAMIENTA DE DIAGNÓSTICO ---
-if probar_clicked:
+if analisis_clicked:
     if matricula_input:
-        st.subheader(f"🔍 Tarjeta de Información para: {matricula_input}")
+        st.subheader(f"🔍 Análisis Catastral para: {matricula_input}")
         db_credentials = st.secrets["db_credentials"]
         info = obtener_info_catastral_batch([matricula_input], db_credentials)
         resultado_individual = info.get(matricula_input.strip())
         
         if resultado_individual:
-            # Llamamos a la nueva función para mostrar la tarjeta
             mostrar_tarjeta_info(resultado_individual)
         else:
             st.error("❌ No se encontró la matrícula en la base catastral.")
             st.info("Verifica que no haya espacios en blanco o errores en el número.")
     else:
-        st.warning("Por favor, introduce una matrícula para probar la búsqueda.")
+        st.warning("Por favor, introduce una matrícula para realizar el análisis.")
 
-
-# --- LÓGICA DE GENERACIÓN DEL GRAFO ---
 if generar_clicked:
     if matricula_input:
         st.subheader(f"Grafo de Relaciones para: {matricula_input}")
