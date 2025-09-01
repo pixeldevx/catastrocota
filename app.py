@@ -65,13 +65,22 @@ def obtener_info_terreno_por_predial(numero_predial, db_params):
         st.error(f"Error en info terreno: {e}")
         return None
 
+# Función para obtener la existencia de matrículas en la base catastral (para los tooltips del grafo)
+def obtener_existencia_catastral_batch(matriculas, db_params):
+    if not matriculas: return set()
+    matriculas_limpias = [str(m).strip() for m in matriculas]
+    try:
+        with psycopg2.connect(**db_params) as conn_batch:
+            query_batch = 'SELECT DISTINCT TRIM("Matricula") FROM public.informacioncatastral WHERE TRIM("Matricula") = ANY(%(matriculas)s);'
+            df_batch = pd.read_sql_query(query_batch, conn_batch, params={'matriculas': matriculas_limpias})
+            return set(df_batch['TRIM'].tolist())
+    except Exception as e:
+        st.error(f"Error al verificar existencia catastral: {e}")
+        return set()
+
 def generar_grafo_interactivo(no_matricula_inicial, db_params):
-    # (Esta función no necesita cambios, la dejamos como está)
     try:
         with psycopg2.connect(**db_params) as conn:
-            # La consulta para obtener info catastral para los tooltips necesita ser actualizada
-            # para no depender de la función que hemos cambiado.
-            # La manera más simple es tener una función batch separada.
             query_recursiva = """
             WITH RECURSIVE familia_grafo AS (
                 SELECT id, no_matricula_inmobiliaria FROM public.matriculas WHERE TRIM(no_matricula_inmobiliaria) = %(start_node)s
@@ -98,18 +107,6 @@ def generar_grafo_interactivo(no_matricula_inicial, db_params):
         if df_relaciones.empty:
             return None, f"⚠️ No se encontraron relaciones para '{no_matricula_inicial}'."
         
-        # Necesitamos una función batch para los tooltips del grafo
-        def obtener_existencia_catastral_batch(matriculas, db_params):
-            if not matriculas: return set()
-            matriculas_limpias = [str(m).strip() for m in matriculas]
-            try:
-                with psycopg2.connect(**db_params) as conn_batch:
-                    query_batch = 'SELECT DISTINCT TRIM("Matricula") FROM public.informacioncatastral WHERE TRIM("Matricula") = ANY(%(matriculas)s);'
-                    df_batch = pd.read_sql_query(query_batch, conn_batch, params={'matriculas': matriculas_limpias})
-                    return set(df_batch['TRIM'].tolist())
-            except:
-                return set()
-
         nodos_del_grafo = set(df_relaciones['padre']).union(set(df_relaciones['hija']))
         matriculas_en_catastro = obtener_existencia_catastral_batch(nodos_del_grafo, db_params)
 
@@ -119,13 +116,13 @@ def generar_grafo_interactivo(no_matricula_inicial, db_params):
         for node_id in g.nodes():
             if str(node_id) in matriculas_en_catastro:
                 title = f"Matrícula: {node_id}\nEstado: Se encuentra en la base catastral."
-                color = "#28a745"
+                color = "#28a745" # Verde
             else:
                 title = f"Matrícula: {node_id}\nEstado: No se encuentra en la base catastral."
-                color = "#ffc107"
+                color = "#ffc107" # Amarillo (Alerta)
 
             if str(node_id) == str(no_matricula_inicial).strip():
-                color = "#dc3545"
+                color = "#dc3545" # Rojo
                 size = 40
             else:
                 size = 25
@@ -140,6 +137,46 @@ def generar_grafo_interactivo(no_matricula_inicial, db_params):
         return nombre_archivo, f"✅ Grafo interactivo generado con {len(g.nodes())} nodos."
     except Exception as e:
         return None, f"❌ Ocurrió un error al generar el grafo: {e}"
+
+# --- FUNCIÓN PARA MOSTRAR LA TARJETA DE ANÁLISIS ---
+def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
+    st.markdown("---")
+    
+    info_catastral = obtener_info_catastral(matricula_a_analizar, db_params).get(matricula_a_analizar.strip())
+    
+    if not info_catastral:
+        st.error(f"❌ No se encontró la matrícula '{matricula_a_analizar}' en la base catastral.")
+    else:
+        st.success("✅ ¡Encontrada en la Base Catastral!")
+        st.metric(label="Número Predial", value=info_catastral['numero_predial'])
+        c1, c2 = st.columns(2)
+        c1.metric(label="Área Terreno (m²)", value=info_catastral['area_terreno'])
+        c2.metric(label="Área Construida (m²)", value=info_catastral['area_construida'])
+        with st.expander(f"Propietarios ({len(info_catastral['propietarios'])})"):
+            for p in info_catastral['propietarios']: st.write(f"- {p}")
+
+        st.markdown("---")
+        numero_predial_nacional = info_catastral.get('numero_predial_nacional')
+        if numero_predial_nacional:
+            with st.spinner(f"Buscando información geográfica para {numero_predial_nacional}..."):
+                info_terreno = obtener_info_terreno_por_predial(numero_predial_nacional, db_params)
+            
+            if info_terreno:
+                st.success("✅ ¡Encontrada en la Base Geográfica!")
+                if info_terreno.get('direccion'):
+                    st.metric(label="Dirección", value=info_terreno['direccion'])
+                if info_terreno.get('geojson'):
+                    geojson_data = json.loads(info_terreno['geojson'])
+                    m = folium.Map(location=[4.5709, -74.2973], zoom_start=6) 
+                    folium.GeoJson(geojson_data).add_to(m) 
+                    m.fit_bounds(folium.GeoJson(geojson_data).get_bounds()) 
+                    st.write("**Visualización Geográfica del Terreno:**")
+                    st_folium(m, width=700, height=500)
+            else:
+                st.warning(f"⚠️ No se encontró registro geográfico para el número predial: '{numero_predial_nacional}'.")
+        else:
+            st.warning("⚠️ La información catastral no contiene un 'Número Predial Nacional' para buscar en la base geográfica.")
+
 
 # --- INTERFAZ GRÁFICA Y LÓGICA PRINCIPAL ---
 st.title("Panel de Análisis de Matrículas 🕸️")
@@ -159,7 +196,7 @@ with col_grafo:
     if st.button("Generar Grafo Interactivo", type="primary"):
         if matricula_input_grafo:
             st.session_state.matricula_grafo = matricula_input_grafo
-            st.session_state.matricula_analisis = matricula_input_grafo
+            st.session_state.matricula_analisis = matricula_input_grafo # Sincroniza
         else:
             st.warning("Por favor, introduce una matrícula para generar el grafo.")
 
@@ -170,7 +207,15 @@ with col_grafo:
         st.info(mensaje)
 
         if nombre_archivo_html:
-            st.markdown("""**Leyenda:** ...""", unsafe_allow_html=True)
+            # --- LEYENDA DE COLORES ---
+            st.markdown("""
+                **Leyenda:** &nbsp;
+                <span style="display:inline-block; width:12px; height:12px; border-radius:50%; background-color:#dc3545; vertical-align:middle; border:1px solid #555;"></span> Matrícula Buscada &nbsp;
+                <span style="display:inline-block; width:12px; height:12px; border-radius:50%; background-color:#28a745; vertical-align:middle; border:1px solid #555;"></span> En Base Catastral &nbsp;
+                <span style="display:inline-block; width:12px; height:12px; border-radius:50%; background-color:#ffc107; vertical-align:middle; border:1px solid #555;"></span> No en Base Catastral
+            """, unsafe_allow_html=True)
+            st.markdown("---") # Separador visual
+            
             with open(nombre_archivo_html, 'r', encoding='utf-8') as f:
                 source_code = f.read()
                 st.components.v1.html(source_code, height=800, scrolling=True)
@@ -184,44 +229,7 @@ with col_analisis:
         st.session_state.matricula_analisis = matricula_input_analisis
 
     if st.session_state.matricula_analisis:
-        st.markdown("---")
-        matricula_a_analizar = st.session_state.matricula_analisis
-        
         db_credentials = st.secrets["db_credentials"]
-        info_catastral = obtener_info_catastral(matricula_a_analizar, db_credentials).get(matricula_a_analizar.strip())
-        
-        if not info_catastral:
-            st.error(f"❌ No se encontró la matrícula '{matricula_a_analizar}' en la base catastral.")
-        else:
-            st.success("✅ ¡Encontrada en la Base Catastral!")
-            st.metric(label="Número Predial", value=info_catastral['numero_predial'])
-            c1, c2 = st.columns(2)
-            c1.metric(label="Área Terreno (m²)", value=info_catastral['area_terreno'])
-            c2.metric(label="Área Construida (m²)", value=info_catastral['area_construida'])
-            with st.expander(f"Propietarios ({len(info_catastral['propietarios'])})"):
-                for p in info_catastral['propietarios']: st.write(f"- {p}")
-
-            # --- NUEVA LÓGICA DE BÚSQUEDA GEOGRÁFICA ---
-            st.markdown("---")
-            numero_predial_nacional = info_catastral.get('numero_predial_nacional')
-            if numero_predial_nacional:
-                with st.spinner("Buscando información geográfica..."):
-                    info_terreno = obtener_info_terreno_por_predial(numero_predial_nacional, db_credentials)
-                
-                if info_terreno:
-                    st.success("✅ ¡Encontrada en la Base Geográfica!")
-                    if info_terreno.get('direccion'):
-                        st.metric(label="Dirección", value=info_terreno['direccion'])
-                    if info_terreno.get('geojson'):
-                        geojson_data = json.loads(info_terreno['geojson'])
-                        m = folium.Map(location=[4.5709, -74.2973], zoom_start=6) 
-                        folium.GeoJson(geojson_data).add_to(m) 
-                        m.fit_bounds(folium.GeoJson(geojson_data).get_bounds()) 
-                        st.write("**Visualización Geográfica del Terreno:**")
-                        st_folium(m, width=700, height=500)
-                else:
-                    st.warning("⚠️ No se encontró registro geográfico para este número predial.")
-            else:
-                st.warning("⚠️ La información catastral no contiene un 'Número Predial Nacional' para buscar en la base geográfica.")
+        mostrar_tarjeta_analisis(st.session_state.matricula_analisis, db_credentials)
     else:
         st.info("Introduce una matrícula y presiona 'Analizar'.")
