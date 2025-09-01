@@ -81,12 +81,10 @@ def generar_grafo_matricula(no_matricula_inicial, db_params):
         g = nx.from_pandas_edgelist(df_relaciones, 'padre', 'hija', create_using=nx.DiGraph())
         net = Network(height="800px", width="100%", directed=True, notebook=True, cdn_resources='in_line')
         
-        # Agregamos los nodos individualmente para tener control sobre el 'title' (popup)
         for node in g.nodes():
             node_id = str(node)
             info_nodo = info_catastral_nodos.get(node_id)
             
-            # --- CORRECCIÓN CLAVE: El 'title' se usa para el popup al hacer clic ---
             if info_nodo:
                 propietarios_html = '<br>- '.join(info_nodo['propietarios'])
                 popup_html = (
@@ -107,12 +105,11 @@ def generar_grafo_matricula(no_matricula_inicial, db_params):
             
             net.add_node(node_id, label=node_id, title=popup_html, color=color, size=size)
 
-        # Agregamos las aristas
         net.add_edges(g.edges())
         
-        # --- CORRECCIÓN: Opciones limpias y sin comentarios ---
+        # --- CORRECCIÓN FINAL: Sintaxis de opciones como JSON puro ---
         net.set_options("""
-        var options = {
+        {
           "layout": {
             "hierarchical": {
               "enabled": true,
@@ -128,7 +125,7 @@ def generar_grafo_matricula(no_matricula_inicial, db_params):
           "interaction": {
             "hover": true
           }
-        };
+        }
         """)
 
         nombre_archivo = f"grafo_{no_matricula_inicial}.html"
@@ -139,9 +136,6 @@ def generar_grafo_matricula(no_matricula_inicial, db_params):
         return None, f"❌ Ocurrió un error al generar el grafo: {e}"
 
 def mostrar_tarjeta_info(info_dict):
-    """
-    Toma un diccionario con información catastral y lo muestra en una tarjeta de Streamlit.
-    """
     st.success("✅ ¡Encontrada en la Base Catastral!")
     st.markdown("---")
     st.metric(label="Número Predial", value=info_dict['numero_predial'])
