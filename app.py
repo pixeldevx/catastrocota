@@ -65,15 +65,20 @@ def obtener_info_terreno_por_predial(numero_predial, db_params):
         st.error(f"Error en info terreno: {e}")
         return None
 
-# Función para obtener la existencia de matrículas en la base catastral (para los tooltips del grafo)
+# --- FUNCIÓN CORREGIDA ---
 def obtener_existencia_catastral_batch(matriculas, db_params):
+    """
+    Verifica cuáles de una lista de matrículas existen en la tabla catastral.
+    """
     if not matriculas: return set()
     matriculas_limpias = [str(m).strip() for m in matriculas]
     try:
         with psycopg2.connect(**db_params) as conn_batch:
-            query_batch = 'SELECT DISTINCT TRIM("Matricula") FROM public.informacioncatastral WHERE TRIM("Matricula") = ANY(%(matriculas)s);'
+            # CORRECCIÓN: Se añade un alias 'matricula_limpia' a la columna resultante de TRIM.
+            query_batch = 'SELECT DISTINCT TRIM("Matricula") AS matricula_limpia FROM public.informacioncatastral WHERE TRIM("Matricula") = ANY(%(matriculas)s);'
             df_batch = pd.read_sql_query(query_batch, conn_batch, params={'matriculas': matriculas_limpias})
-            return set(df_batch['TRIM'].tolist())
+            # Usamos el alias correcto para acceder a los datos.
+            return set(df_batch['matricula_limpia'].tolist())
     except Exception as e:
         st.error(f"Error al verificar existencia catastral: {e}")
         return set()
