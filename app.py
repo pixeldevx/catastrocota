@@ -16,8 +16,8 @@ def obtener_info_catastral_batch(matriculas, db_params):
     try:
         with psycopg2.connect(**db_params) as conn:
             query = """
-                SELECT TRIM("Matricula") as "Matricula", numero_predial, area_terreno, area_construida, nombre 
-                FROM public.informacioncatastral 
+                SELECT TRIM("Matricula") as "Matricula", numero_predial, area_terreno, area_construida, nombre
+                FROM public.informacioncatastral
                 WHERE TRIM("Matricula") = ANY(%(matriculas)s);
             """
             df = pd.read_sql_query(query, conn, params={'matriculas': matriculas_limpias})
@@ -34,7 +34,7 @@ def obtener_info_catastral_batch(matriculas, db_params):
         st.error(f"Error al obtener datos catastrales: {e}")
         return {}
 
-# --- FUNCIÓN DEL GRAFO (MODIFICADA PARA LA NUEVA INTERACTIVIDAD) ---
+# --- FUNCIÓN DEL GRAFO (sin cambios) ---
 def generar_grafo_interactivo(no_matricula_inicial, db_params):
     try:
         with psycopg2.connect(**db_params) as conn:
@@ -69,11 +69,10 @@ def generar_grafo_interactivo(no_matricula_inicial, db_params):
 
         g = nx.from_pandas_edgelist(df_relaciones, 'padre', 'hija', create_using=nx.DiGraph())
         net = Network(height="800px", width="100%", directed=True, notebook=True, cdn_resources='in_line')
-        
+
         for node_id in g.nodes():
             info_nodo = info_catastral_nodos.get(str(node_id))
-            
-            # Asignamos color y tooltip según si se encontró la info catastral
+
             if info_nodo:
                 title = f"Matrícula: {node_id}\nEstado: Se encuentra en la base catastral."
                 color = "#28a745" # Verde
@@ -81,17 +80,16 @@ def generar_grafo_interactivo(no_matricula_inicial, db_params):
                 title = f"Matrícula: {node_id}\nEstado: No se encuentra en la base catastral."
                 color = "#ffc107" # Amarillo (Alerta)
 
-            # La matrícula principal siempre será roja y más grande
             if str(node_id) == str(no_matricula_inicial).strip():
                 color = "#dc3545" # Rojo
                 size = 40
             else:
                 size = 25
-            
+
             net.add_node(str(node_id), label=str(node_id), title=title, color=color, size=size)
 
         net.add_edges(g.edges())
-        
+
         options = {"layout": {"hierarchical": {"enabled": True, "direction": "UD", "sortMethod": "directed", "levelSeparation": 150, "nodeSpacing": 200}}, "physics": {"enabled": False}}
         net.set_options(json.dumps(options))
 
@@ -128,7 +126,6 @@ with col1_btn:
 with col2_btn:
     analisis_clicked = st.button("Análisis Catastral Individual")
 
-# Lógica para el análisis individual (se mantiene igual)
 if analisis_clicked:
     if matricula_input:
         st.subheader(f"🔍 Análisis Catastral para: {matricula_input}")
@@ -142,16 +139,50 @@ if analisis_clicked:
     else:
         st.warning("Por favor, introduce una matrícula para el análisis.")
 
-# Lógica para generar el grafo interactivo
 if generar_clicked:
     if matricula_input:
         db_credentials = st.secrets["db_credentials"]
         with st.spinner("Generando grafo con códigos de color..."):
             nombre_archivo_html, mensaje = generar_grafo_interactivo(matricula_input, db_credentials)
-        
+
         st.info(mensaje)
 
         if nombre_archivo_html:
+            # --- NUEVA SECCIÓN: LEYENDA DE COLORES ---
+            st.subheader("Leyenda de Colores")
+            st.markdown("""
+                <style>
+                .legend-color {
+                    display: inline-block;
+                    width: 15px;
+                    height: 15px;
+                    border-radius: 50%;
+                    margin-right: 8px;
+                    vertical-align: middle;
+                    border: 1px solid #555;
+                }
+                .legend-item {
+                    display: flex;
+                    align-items: center;
+                    margin-bottom: 5px;
+                }
+                </style>
+                <div class="legend-item">
+                    <span class="legend-color" style="background-color: #dc3545;"></span>
+                    Matrícula Buscada
+                </div>
+                <div class="legend-item">
+                    <span class="legend-color" style="background-color: #28a745;"></span>
+                    Encontrada en Base Catastral
+                </div>
+                <div class="legend-item">
+                    <span class="legend-color" style="background-color: #ffc107;"></span>
+                    No Encontrada en Base Catastral
+                </div>
+            """, unsafe_allow_html=True)
+            st.markdown("---") # Separador visual
+
+            # --- RENDERIZADO DEL GRAFO ---
             with open(nombre_archivo_html, 'r', encoding='utf-8') as f:
                 source_code = f.read()
                 st.components.v1.html(source_code, height=800, scrolling=True)
