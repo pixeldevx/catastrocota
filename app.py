@@ -35,7 +35,7 @@ def obtener_info_catastral_batch(matriculas, db_params):
         st.error(f"Error al obtener datos catastrales: {e}")
         return {}
 
-# --- FUNCIÓN DEL GRAFO (MODIFICADA PARA COMUNICACIÓN EXTERNA) ---
+# --- FUNCIÓN DEL GRAFO (CORREGIDA) ---
 
 def generar_grafo_para_streamlit(no_matricula_inicial, db_params):
     try:
@@ -66,23 +66,25 @@ def generar_grafo_para_streamlit(no_matricula_inicial, db_params):
         if df_relaciones.empty:
             return None, f"⚠️ No se encontraron relaciones para '{no_matricula_inicial}'."
 
+        # --- LÍNEA CORREGIDA: Se restaura la búsqueda de datos catastrales ---
+        nodos_del_grafo = set(df_relaciones['padre']).union(set(df_relaciones['hija']))
+        info_catastral_nodos = obtener_info_catastral_batch(nodos_del_grafo, db_params)
+        
         g = nx.from_pandas_edgelist(df_relaciones, 'padre', 'hija', create_using=nx.DiGraph())
         net = Network(height="800px", width="100%", directed=True, notebook=True, cdn_resources='in_line')
         
         for node in g.nodes():
             node_id = str(node)
+            info_nodo = info_catastral_nodos.get(node_id, {})
             color = "#FF0000" if node_id == str(no_matricula_inicial).strip() else "#97C2FC"
             size = 40 if node_id == str(no_matricula_inicial).strip() else 25
             
-            # SOLUCIÓN: Usamos un enlace <a> con target="_top" para asegurar que la URL principal cambie
-            # El 'title' ahora es el popup HTML que SÍ debería funcionar con este método
-            propietarios_html = '<br>- '.join(info_catastral_nodos.get(node_id, {}).get('propietarios', []))
-            popup_html = (
-                f'<a href="?matricula_buscada={no_matricula_inicial}&matricula_seleccionada={node_id}" target="_top">'
-                f'Click para ver detalles de {node_id}'
-                f'</a>'
-            )
-            net.add_node(node_id, label=node_id, title=popup_html, color=color, size=size)
+            # El title ahora es un tooltip simple, el clic maneja la interacción principal
+            title = f"Click para ver detalles de {node_id}"
+            
+            # El evento onclick actualiza la URL de la página principal
+            click_handler = f"window.top.location.href = '?matricula_buscada={no_matricula_inicial}&matricula_seleccionada={node_id}';"
+            net.add_node(node_id, label=node_id, title=title, color=color, size=size, **{"onclick": click_handler})
 
         net.add_edges(g.edges())
         
@@ -96,7 +98,7 @@ def generar_grafo_para_streamlit(no_matricula_inicial, db_params):
     except Exception as e:
         return None, f"❌ Ocurrió un error al generar el grafo: {e}"
 
-
+# --- FUNCIÓN PARA MOSTRAR LA TARJETA (sin cambios) ---
 def mostrar_tarjeta_info(info_dict):
     st.success("✅ ¡Encontrada en la Base Catastral!")
     st.markdown("---")
@@ -111,31 +113,22 @@ def mostrar_tarjeta_info(info_dict):
 # --- INTERFAZ GRÁFICA Y LÓGICA PRINCIPAL ---
 st.title("Visor Interactivo de Matrículas 🕸️")
 
-# Leemos los parámetros de la URL para mantener el estado
 params = st.query_params
 matricula_buscada_url = params.get("matricula_buscada", "")
 matricula_seleccionada_url = params.get("matricula_seleccionada", "")
 
-# Usamos st.session_state para una gestión más robusta
-if "matricula_buscada" not in st.session_state:
-    st.session_state.matricula_buscada = matricula_buscada_url
-
-# El input se controla con el session_state
 matricula_input = st.text_input(
     "Introduce el número de matrícula para generar el grafo:",
-    key="matricula_buscada",
+    value=matricula_buscada_url,
     placeholder="Ej: 1037473"
 )
 
-# Creamos el diseño de dos columnas
 col_grafo, col_info = st.columns([3, 2])
 
-# --- COLUMNA DERECHA: TARJETA DE INFORMACIÓN ---
 with col_info:
     st.subheader("🔍 Análisis Catastral")
     
-    # La matrícula a mostrar en la tarjeta tiene prioridad si fue seleccionada por clic (desde la URL)
-    matricula_a_mostrar = matricula_seleccionada_url or st.session_state.matricula_buscada
+    matricula_a_mostrar = matricula_seleccionada_url or matricula_input
 
     if matricula_a_mostrar:
         db_credentials = st.secrets["db_credentials"]
@@ -149,21 +142,26 @@ with col_info:
     else:
         st.info("Busca una matrícula o haz clic en un nodo del grafo para ver sus detalles aquí.")
 
-# --- COLUMNA IZQUIERDA: GRAFO ---
 with col_grafo:
-    if st.session_state.matricula_buscada:
+    if st.button("Generar Grafo", type="primary"):
+        # Actualizamos la URL para que refleje la búsqueda del botón
+        st.query_params["matricula_buscada"] = matricula_input
+        st.query_params["matricula_seleccionada"] = matricula_input
+
+    # El grafo se genera si hay una matrícula buscada en la URL
+    if "matricula_buscada" in st.query_params and st.query_params["matricula_buscada"]:
         db_credentials = st.secrets["db_credentials"]
         
-        # Generamos el grafo basado en el estado de la sesión
         with st.spinner("Buscando relaciones y generando grafo..."):
-            nombre_archivo_html, mensaje = generar_grafo_para_streamlit(st.session_state.matricula_buscada, db_credentials)
+            nombre_archivo_html, mensaje = generar_grafo_para_streamlit(st.query_params["matricula_buscada"], db_credentials)
         
         st.info(mensaje)
 
         if nombre_archivo_html:
             with open(nombre_archivo_html, 'r', encoding='utf-8') as f:
                 source_code = f.read()
-                st.components.v1.html(source_code, height=820, scrolling=True)
+                # Usamos una 'key' única para forzar el refresco del componente HTML
+                st.components.v1.html(source_code, height=820, scrolling=True, key=st.query_params["matricula_buscada"])
             os.remove(nombre_archivo_html)
     else:
-        st.info("↑ Introduce una matrícula para comenzar.")
+        st.info("↑ Introduce una matrícula y presiona 'Generar Grafo' para comenzar.")
