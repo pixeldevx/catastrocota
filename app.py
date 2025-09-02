@@ -45,14 +45,16 @@ def obtener_info_catastral(matricula, db_params):
         st.error(f"Error en info catastral: {e}")
         return {}
 
+# --- FUNCIÓN CORREGIDA para usar 'geom' ---
 def obtener_info_terreno_por_predial(numero_predial, db_params):
     """
     Busca la geometría y dirección del terreno usando el número predial nacional ('codigo').
+    Ahora usa la columna 'geom' para la geometría.
     """
     try:
         with psycopg2.connect(**db_params) as conn:
             query = """
-                SELECT direccion, ST_AsGeoJSON(wkb_geometry) as geojson
+                SELECT direccion, ST_AsGeoJSON(geom) as geojson
                 FROM public.terrenos
                 WHERE codigo = %(numero_predial)s
                 LIMIT 1;
@@ -65,7 +67,6 @@ def obtener_info_terreno_por_predial(numero_predial, db_params):
         st.error(f"Error en info terreno: {e}")
         return None
 
-# --- FUNCIÓN CORREGIDA ---
 def obtener_existencia_catastral_batch(matriculas, db_params):
     """
     Verifica cuáles de una lista de matrículas existen en la tabla catastral.
@@ -74,10 +75,8 @@ def obtener_existencia_catastral_batch(matriculas, db_params):
     matriculas_limpias = [str(m).strip() for m in matriculas]
     try:
         with psycopg2.connect(**db_params) as conn_batch:
-            # CORRECCIÓN: Se añade un alias 'matricula_limpia' a la columna resultante de TRIM.
             query_batch = 'SELECT DISTINCT TRIM("Matricula") AS matricula_limpia FROM public.informacioncatastral WHERE TRIM("Matricula") = ANY(%(matriculas)s);'
             df_batch = pd.read_sql_query(query_batch, conn_batch, params={'matriculas': matriculas_limpias})
-            # Usamos el alias correcto para acceder a los datos.
             return set(df_batch['matricula_limpia'].tolist())
     except Exception as e:
         st.error(f"Error al verificar existencia catastral: {e}")
@@ -143,7 +142,6 @@ def generar_grafo_interactivo(no_matricula_inicial, db_params):
     except Exception as e:
         return None, f"❌ Ocurrió un error al generar el grafo: {e}"
 
-# --- FUNCIÓN PARA MOSTRAR LA TARJETA DE ANÁLISIS ---
 def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
     st.markdown("---")
     
@@ -172,9 +170,13 @@ def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
                     st.metric(label="Dirección", value=info_terreno['direccion'])
                 if info_terreno.get('geojson'):
                     geojson_data = json.loads(info_terreno['geojson'])
+                    # Crear un mapa centrado en Colombia
                     m = folium.Map(location=[4.5709, -74.2973], zoom_start=6) 
+                    # Añadir el polígono al mapa
                     folium.GeoJson(geojson_data).add_to(m) 
+                    # Ajustar el mapa para que se centre y haga zoom en el polígono
                     m.fit_bounds(folium.GeoJson(geojson_data).get_bounds()) 
+                    
                     st.write("**Visualización Geográfica del Terreno:**")
                     st_folium(m, width=700, height=500)
             else:
