@@ -69,9 +69,11 @@ def obtener_existencia_catastral_batch(matriculas, db_params):
         st.error(f"Error al verificar existencia catastral: {e}")
         return set()
 
+# --- FUNCIÓN DEL GRAFO (MODIFICADA) ---
 def generar_grafo_interactivo(no_matricula_inicial, db_params):
     try:
         with psycopg2.connect(**db_params) as conn:
+            # --- CORRECCIÓN: La consulta ahora trae el estado_folio ---
             query_recursiva = """
             WITH RECURSIVE familia_grafo AS (
                 SELECT id, no_matricula_inmobiliaria FROM public.matriculas WHERE TRIM(no_matricula_inmobiliaria) = %(start_node)s
@@ -86,7 +88,9 @@ def generar_grafo_interactivo(no_matricula_inicial, db_params):
             )
             SELECT DISTINCT
                 TRIM(padre.no_matricula_inmobiliaria) AS padre,
-                TRIM(hija.no_matricula_inmobiliaria) AS hija
+                TRIM(hija.no_matricula_inmobiliaria) AS hija,
+                padre.estado_folio AS padre_estado,
+                hija.estado_folio AS hija_estado
             FROM public.relacionesmatriculas rel
             JOIN public.matriculas padre ON rel.matricula_padre_id = padre.id
             JOIN public.matriculas hija ON rel.matricula_hija_id = hija.id
@@ -101,15 +105,23 @@ def generar_grafo_interactivo(no_matricula_inicial, db_params):
         nodos_del_grafo = set(df_relaciones['padre']).union(set(df_relaciones['hija']))
         matriculas_en_catastro = obtener_existencia_catastral_batch(nodos_del_grafo, db_params)
 
+        # --- CORRECCIÓN: Creamos un mapa para guardar el estado_folio de cada matrícula ---
+        estado_folio_map = {}
+        for index, row in df_relaciones.iterrows():
+            estado_folio_map[row['padre']] = row['padre_estado']
+            estado_folio_map[row['hija']] = row['hija_estado']
+
         g = nx.from_pandas_edgelist(df_relaciones, 'padre', 'hija', create_using=nx.DiGraph())
         net = Network(height="800px", width="100%", directed=True, notebook=True, cdn_resources='in_line')
 
         for node_id in g.nodes():
+            estado_folio = estado_folio_map.get(str(node_id), 'No disponible')
+            
             if str(node_id) in matriculas_en_catastro:
-                title = f"Matrícula: {node_id}\nEstado: Se encuentra en la base catastral."
+                title = f"Matrícula: {node_id}\nEstado Folio: {estado_folio}\nEstado: Se encuentra en la base catastral."
                 color = "#28a745"
             else:
-                title = f"Matrícula: {node_id}\nEstado: No se encuentra en la base catastral."
+                title = f"Matrícula: {node_id}\nEstado Folio: {estado_folio}\nEstado: No se encuentra en la base catastral."
                 color = "#ffc107"
 
             if str(node_id) == str(no_matricula_inicial).strip():
@@ -140,7 +152,6 @@ def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
     else:
         st.success("✅ ¡Encontrada en la Base Catastral!")
         
-        # --- CORRECCIÓN: CSS para ajustar tamaño de fuente del Número Predial ---
         st.markdown("""
             <style>
             div[data-testid="metric-container"] > div > p {
@@ -178,18 +189,12 @@ def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
                     m.fit_bounds(folium.GeoJson(geojson_data).get_bounds())
                     
                     st.write("**Visualización Geográfica del Terreno:**")
-                    
-                    # --- SOLUCIÓN A MAPA CORTADO Y RECARGA ---
-                    # Renderizamos el mapa a un archivo HTML temporal
                     mapa_path = "mapa_terreno.html"
                     m.save(mapa_path)
-                    
-                    # Leemos el HTML y lo mostramos con st.components.v1.html
                     with open(mapa_path, "r", encoding="utf-8") as f:
                         map_html = f.read()
-                    
                     st.components.v1.html(map_html, height=500)
-                    os.remove(mapa_path) # Limpiamos el archivo
+                    os.remove(mapa_path)
 
             else:
                 st.warning(f"⚠️ No se encontró registro geográfico para el número predial: '{numero_predial_nacional}'.")
@@ -197,7 +202,7 @@ def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
             st.warning("⚠️ La información catastral no contiene un 'Número Predial Nacional' para buscar.")
 
 # --- INTERFAZ GRÁFICA Y LÓGICA PRINCIPAL ---
-st.title("Asistente de Análisis Catastral 🗺️") # --- TÍTULO CORREGIDO ---
+st.title("Asistente de Análisis Catastral 🗺️")
 
 if 'matricula_grafo' not in st.session_state:
     st.session_state.matricula_grafo = ""
