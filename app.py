@@ -45,16 +45,18 @@ def obtener_info_catastral(matricula, db_params):
         st.error(f"Error en info catastral: {e}")
         return {}
 
-# --- FUNCIÓN CORREGIDA para usar 'geom' ---
+# --- FUNCIÓN CORREGIDA para reproyectar a EPSG:4326 ---
 def obtener_info_terreno_por_predial(numero_predial, db_params):
     """
-    Busca la geometría y dirección del terreno usando el número predial nacional ('codigo').
-    Ahora usa la columna 'geom' para la geometría.
+    Busca la geometría y dirección del terreno, reproyecta la geometría a EPSG:4326 y
+    la devuelve como GeoJSON.
     """
     try:
         with psycopg2.connect(**db_params) as conn:
             query = """
-                SELECT direccion, ST_AsGeoJSON(geom) as geojson
+                SELECT 
+                    direccion, 
+                    ST_AsGeoJSON(ST_Transform(geom, 4326)) as geojson -- Aquí la reproyección a WGS84
                 FROM public.terrenos
                 WHERE codigo = %(numero_predial)s
                 LIMIT 1;
@@ -68,9 +70,6 @@ def obtener_info_terreno_por_predial(numero_predial, db_params):
         return None
 
 def obtener_existencia_catastral_batch(matriculas, db_params):
-    """
-    Verifica cuáles de una lista de matrículas existen en la tabla catastral.
-    """
     if not matriculas: return set()
     matriculas_limpias = [str(m).strip() for m in matriculas]
     try:
@@ -170,12 +169,10 @@ def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
                     st.metric(label="Dirección", value=info_terreno['direccion'])
                 if info_terreno.get('geojson'):
                     geojson_data = json.loads(info_terreno['geojson'])
-                    # Crear un mapa centrado en Colombia
-                    m = folium.Map(location=[4.5709, -74.2973], zoom_start=6) 
-                    # Añadir el polígono al mapa
+                    # Ya no necesitamos un centro fijo si Folium lo ajusta automáticamente
+                    m = folium.Map(tiles="OpenStreetMap") # Usa tiles predeterminados
                     folium.GeoJson(geojson_data).add_to(m) 
-                    # Ajustar el mapa para que se centre y haga zoom en el polígono
-                    m.fit_bounds(folium.GeoJson(geojson_data).get_bounds()) 
+                    m.fit_bounds(folium.GeoJson(geojson_data).get_bounds()) # Centra y hace zoom en el polígono
                     
                     st.write("**Visualización Geográfica del Terreno:**")
                     st_folium(m, width=700, height=500)
