@@ -47,7 +47,7 @@ def obtener_info_terreno_por_predial(numero_predial, db_params):
             query = """
                 SELECT 
                     direccion, 
-                    terrafi, -- Asegúrate de que esta columna existe en tu tabla 'terrenos'
+                    terrarfi, -- Asegúrate de que esta columna existe en tu tabla 'terrenos'
                     ST_AsGeoJSON(ST_Transform(geom, 4326)) as geojson
                 FROM public.terrenos
                 WHERE codigo = %(numero_predial)s
@@ -167,7 +167,7 @@ def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
                     # Añadir el atributo terrafi a las propiedades del GeoJSON para usarlo en el popup
                     if 'properties' not in geojson_data:
                         geojson_data['properties'] = {}
-                    geojson_data['properties']['terrafi'] = info_terreno.get('terrafi', 'N/D')
+                    geojson_data['properties']['terrarfi'] = info_terreno.get('terrarfi', 'N/D')
 
                     # 1. Crear el mapa base. Usar el estado de la sesión si existe, o un valor por defecto.
                     map_center = st.session_state.get('map_center', [4.5709, -74.2973]) # Centro de Colombia
@@ -177,13 +177,13 @@ def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
                     
                     # 2. Añadir el polígono como una capa GeoJson con popup
                     # Definir el contenido del popup
-                    popup_html = f"<b>Terreno Físico:</b> {geojson_data['properties']['terrafi']}<br>" \
+                    popup_html = f"<b>Area Geometrica:</b> {geojson_data['properties']['terrarfi']}<br>" \
                                  f"<b>Dirección:</b> {info_terreno.get('direccion', 'N/D')}"
                     
                     geojson_layer = folium.GeoJson(
                         geojson_data,
                         name="Terreno",
-                        tooltip=f"Terreno Físico: {geojson_data['properties']['terrafi']}", # Aparece al pasar el ratón
+                        tooltip=f"Area Geometrica: {geojson_data['properties']['terrarfi']}", # Aparece al pasar el ratón
                         popup=folium.Popup(popup_html, max_width=300) # Aparece al hacer click
                     ).add_to(m)
                     
