@@ -38,16 +38,17 @@ def obtener_info_catastral(matricula, db_params):
         st.error(f"Error en info catastral: {e}")
         return {}
 
+# --- FUNCIÓN CORREGIDA para atributo 'terrarfi' ---
 def obtener_info_terreno_por_predial(numero_predial, db_params):
     """
-    Busca la geometría, dirección y el atributo 'terrafi', reproyecta la geometría a EPSG:4326.
+    Busca la geometría, dirección y el atributo 'terrarfi', reproyecta la geometría a EPSG:4326.
     """
     try:
         with psycopg2.connect(**db_params) as conn:
             query = """
                 SELECT 
                     direccion, 
-                    terrarfi, -- Asegúrate de que esta columna existe en tu tabla 'terrenos'
+                    "terrarfi", -- Corregido a "terrarfi"
                     ST_AsGeoJSON(ST_Transform(geom, 4326)) as geojson
                 FROM public.terrenos
                 WHERE codigo = %(numero_predial)s
@@ -161,72 +162,36 @@ def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
                 if info_terreno.get('direccion'):
                     st.metric(label="Dirección", value=info_terreno['direccion'])
                 
+                # --- CORRECCIÓN: Mostrar 'terrarfi' con la etiqueta 'Area Geometrica' ---
+                if info_terreno.get('terrarfi'):
+                    st.metric(label="Area Geometrica", value=info_terreno['terrarfi'])
+
                 if info_terreno.get('geojson'):
                     geojson_data = json.loads(info_terreno['geojson'])
                     
-                    # Añadir el atributo terrafi a las propiedades del GeoJSON para usarlo en el popup
-                    if 'properties' not in geojson_data:
-                        geojson_data['properties'] = {}
-                    geojson_data['properties']['terrarfi'] = info_terreno.get('terrarfi', 'N/D')
-
-                    # 1. Crear el mapa base. Usar el estado de la sesión si existe, o un valor por defecto.
-                    map_center = st.session_state.get('map_center', [4.5709, -74.2973]) # Centro de Colombia
-                    map_zoom = st.session_state.get('map_zoom', 6)
-                    
-                    m = folium.Map(location=map_center, zoom_start=map_zoom, tiles="OpenStreetMap")
-                    
-                    # 2. Añadir el polígono como una capa GeoJson con popup
-                    # Definir el contenido del popup
-                    popup_html = f"<b>Area Geometrica:</b> {geojson_data['properties']['terrarfi']}<br>" \
-                                 f"<b>Dirección:</b> {info_terreno.get('direccion', 'N/D')}"
-                    
-                    geojson_layer = folium.GeoJson(
-                        geojson_data,
-                        name="Terreno",
-                        tooltip=f"Area Geometrica: {geojson_data['properties']['terrarfi']}", # Aparece al pasar el ratón
-                        popup=folium.Popup(popup_html, max_width=300) # Aparece al hacer click
-                    ).add_to(m)
-                    
-                    # 3. Ajustar los límites del mapa para que se centre en el polígono la primera vez
-                    # O si no hay un estado de mapa guardado.
-                    if not st.session_state.get('map_initialized', False):
-                        m.fit_bounds(geojson_layer.get_bounds())
-                        st.session_state.map_initialized = True
+                    m = folium.Map(tiles="OpenStreetMap")
+                    folium.GeoJson(geojson_data).add_to(m)
+                    m.fit_bounds(folium.GeoJson(geojson_data).get_bounds())
                     
                     st.write("**Visualización Geográfica del Terreno:**")
                     
-                    # 4. Renderizar el mapa y actualizar el estado de la sesión
-                    output = st_folium(m, width=700, height=500, 
-                                      center=map_center, zoom=map_zoom, # Asegurarse de que el mapa se inicialice con el estado
-                                      key=f"map_{matricula_a_analizar}", # Clave única por cada análisis
-                                      returned_objects=["center", "zoom"]) # Pedir que nos devuelva el centro y el zoom
-
-                    # Actualizar el estado de la sesión con la última posición del mapa
-                    if output and output.get("center") and output.get("zoom"):
-                        st.session_state.map_center = [output["center"]["lat"], output["center"]["lng"]]
-                        st.session_state.map_zoom = output["zoom"]
+                    # --- SOLUCIÓN A LA RECARGA: Renderizar como HTML estático ---
+                    map_html = m._repr_html_()
+                    st.components.v1.html(map_html, height=500)
 
             else:
                 st.warning(f"⚠️ No se encontró registro geográfico para el número predial: '{numero_predial_nacional}'.")
         else:
-            st.warning("⚠️ La información catastral no contiene un 'Número Predial Nacional' para buscar en la base geográfica.")
+            st.warning("⚠️ La información catastral no contiene un 'Número Predial Nacional' para buscar.")
 
 # --- INTERFAZ GRÁFICA Y LÓGICA PRINCIPAL ---
 st.title("Panel de Análisis de Matrículas 🕸️")
 
-# Inicializar estados de sesión
 if 'matricula_grafo' not in st.session_state:
     st.session_state.matricula_grafo = ""
 if 'matricula_analisis' not in st.session_state:
     st.session_state.matricula_analisis = ""
-if 'map_center' not in st.session_state:
-    st.session_state.map_center = [4.5709, -74.2973] # Centro de Colombia por defecto
-if 'map_zoom' not in st.session_state:
-    st.session_state.map_zoom = 6
-if 'map_initialized' not in st.session_state:
-    st.session_state.map_initialized = False # Para saber si ya hemos centrado el mapa alguna vez
 
-# Layout
 col_grafo, col_analisis = st.columns([2, 1])
 
 with col_grafo:
@@ -235,8 +200,7 @@ with col_grafo:
     if st.button("Generar Grafo Interactivo", type="primary"):
         if matricula_input_grafo:
             st.session_state.matricula_grafo = matricula_input_grafo
-            st.session_state.matricula_analisis = matricula_input_grafo # Sincroniza
-            st.session_state.map_initialized = False # Resetear la inicialización del mapa al buscar nueva matrícula
+            st.session_state.matricula_analisis = matricula_input_grafo
         else:
             st.warning("Por favor, introduce una matrícula para generar el grafo.")
 
@@ -266,7 +230,6 @@ with col_analisis:
     
     if st.button("Analizar"):
         st.session_state.matricula_analisis = matricula_input_analisis
-        st.session_state.map_initialized = False # Resetear la inicialización del mapa al buscar nueva matrícula
 
     if st.session_state.matricula_analisis:
         db_credentials = st.secrets["db_credentials"]
