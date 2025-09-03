@@ -11,8 +11,7 @@ from streamlit_folium import st_folium
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(layout="wide")
 
-# --- FUNCIONES DE BASE DE DATOS ---
-
+# --- FUNCIONES DE BASE DE DATOS (sin cambios) ---
 def obtener_info_catastral(matricula, db_params):
     if not matricula: return {}
     try:
@@ -38,17 +37,13 @@ def obtener_info_catastral(matricula, db_params):
         st.error(f"Error en info catastral: {e}")
         return {}
 
-# --- FUNCIÓN CORREGIDA para atributo 'terrarfi' ---
 def obtener_info_terreno_por_predial(numero_predial, db_params):
-    """
-    Busca la geometría, dirección y el atributo 'terrarfi', reproyecta la geometría a EPSG:4326.
-    """
     try:
         with psycopg2.connect(**db_params) as conn:
             query = """
                 SELECT 
                     direccion, 
-                    "terrarfi", -- Corregido a "terrarfi"
+                    terrarfi,
                     ST_AsGeoJSON(ST_Transform(geom, 4326)) as geojson
                 FROM public.terrenos
                 WHERE codigo = %(numero_predial)s
@@ -144,7 +139,19 @@ def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
         st.error(f"❌ No se encontró la matrícula '{matricula_a_analizar}' en la base catastral.")
     else:
         st.success("✅ ¡Encontrada en la Base Catastral!")
+        
+        # --- CORRECCIÓN: CSS para ajustar tamaño de fuente del Número Predial ---
+        st.markdown("""
+            <style>
+            div[data-testid="metric-container"] > div > p {
+                font-size: 1.2rem;
+                white-space: normal;
+                word-wrap: break-word;
+            }
+            </style>
+            """, unsafe_allow_html=True)
         st.metric(label="Número Predial", value=info_catastral['numero_predial'])
+
         c1, c2 = st.columns(2)
         c1.metric(label="Área Terreno (m²)", value=info_catastral['area_terreno'])
         c2.metric(label="Área Construida (m²)", value=info_catastral['area_construida'])
@@ -161,23 +168,28 @@ def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
                 st.success("✅ ¡Encontrada en la Base Geográfica!")
                 if info_terreno.get('direccion'):
                     st.metric(label="Dirección", value=info_terreno['direccion'])
-                
-                # --- CORRECCIÓN: Mostrar 'terrarfi' con la etiqueta 'Area Geometrica' ---
                 if info_terreno.get('terrarfi'):
                     st.metric(label="Area Geometrica", value=info_terreno['terrarfi'])
 
                 if info_terreno.get('geojson'):
                     geojson_data = json.loads(info_terreno['geojson'])
-                    
                     m = folium.Map(tiles="OpenStreetMap")
                     folium.GeoJson(geojson_data).add_to(m)
                     m.fit_bounds(folium.GeoJson(geojson_data).get_bounds())
                     
                     st.write("**Visualización Geográfica del Terreno:**")
                     
-                    # --- SOLUCIÓN A LA RECARGA: Renderizar como HTML estático ---
-                    map_html = m._repr_html_()
+                    # --- SOLUCIÓN A MAPA CORTADO Y RECARGA ---
+                    # Renderizamos el mapa a un archivo HTML temporal
+                    mapa_path = "mapa_terreno.html"
+                    m.save(mapa_path)
+                    
+                    # Leemos el HTML y lo mostramos con st.components.v1.html
+                    with open(mapa_path, "r", encoding="utf-8") as f:
+                        map_html = f.read()
+                    
                     st.components.v1.html(map_html, height=500)
+                    os.remove(mapa_path) # Limpiamos el archivo
 
             else:
                 st.warning(f"⚠️ No se encontró registro geográfico para el número predial: '{numero_predial_nacional}'.")
@@ -185,7 +197,7 @@ def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
             st.warning("⚠️ La información catastral no contiene un 'Número Predial Nacional' para buscar.")
 
 # --- INTERFAZ GRÁFICA Y LÓGICA PRINCIPAL ---
-st.title("Panel de Análisis de Matrículas 🕸️")
+st.title("Asistente de Análisis Catastral 🗺️") # --- TÍTULO CORREGIDO ---
 
 if 'matricula_grafo' not in st.session_state:
     st.session_state.matricula_grafo = ""
