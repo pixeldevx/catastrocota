@@ -11,12 +11,8 @@ from streamlit_folium import st_folium
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(layout="wide")
 
-# --- FUNCIONES DE BASE DE DATOS ---
-
+# --- FUNCIONES DE BASE DE DATOS (sin cambios) ---
 def obtener_info_catastral(matricula, db_params):
-    """
-    Busca información de propietarios y, crucialmente, el 'numero_predial_nacional'.
-    """
     if not matricula: return {}
     try:
         with psycopg2.connect(**db_params) as conn:
@@ -26,10 +22,7 @@ def obtener_info_catastral(matricula, db_params):
                 WHERE TRIM("Matricula") = %(matricula)s;
             """
             df = pd.read_sql_query(query, conn, params={'matricula': str(matricula).strip()})
-            
-            if df.empty:
-                return {}
-
+            if df.empty: return {}
             info_catastral = {}
             for m, group in df.groupby('Matricula'):
                 info_catastral[m] = {
@@ -40,23 +33,17 @@ def obtener_info_catastral(matricula, db_params):
                     "numero_predial_nacional": group['numero_predial_nacional'].iloc[0]
                 }
             return info_catastral
-            
     except Exception as e:
         st.error(f"Error en info catastral: {e}")
         return {}
 
-# --- FUNCIÓN CORREGIDA para reproyectar a EPSG:4326 ---
 def obtener_info_terreno_por_predial(numero_predial, db_params):
-    """
-    Busca la geometría y dirección del terreno, reproyecta la geometría a EPSG:4326 y
-    la devuelve como GeoJSON.
-    """
     try:
         with psycopg2.connect(**db_params) as conn:
             query = """
                 SELECT 
                     direccion, 
-                    ST_AsGeoJSON(ST_Transform(geom, 4326)) as geojson -- Aquí la reproyección a WGS84
+                    ST_AsGeoJSON(ST_Transform(geom, 4326)) as geojson
                 FROM public.terrenos
                 WHERE codigo = %(numero_predial)s
                 LIMIT 1;
@@ -119,13 +106,13 @@ def generar_grafo_interactivo(no_matricula_inicial, db_params):
         for node_id in g.nodes():
             if str(node_id) in matriculas_en_catastro:
                 title = f"Matrícula: {node_id}\nEstado: Se encuentra en la base catastral."
-                color = "#28a745" # Verde
+                color = "#28a745"
             else:
                 title = f"Matrícula: {node_id}\nEstado: No se encuentra en la base catastral."
-                color = "#ffc107" # Amarillo (Alerta)
+                color = "#ffc107"
 
             if str(node_id) == str(no_matricula_inicial).strip():
-                color = "#dc3545" # Rojo
+                color = "#dc3545"
                 size = 40
             else:
                 size = 25
@@ -141,6 +128,7 @@ def generar_grafo_interactivo(no_matricula_inicial, db_params):
     except Exception as e:
         return None, f"❌ Ocurrió un error al generar el grafo: {e}"
 
+# --- FUNCIÓN PARA MOSTRAR LA TARJETA DE ANÁLISIS ---
 def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
     st.markdown("---")
     
@@ -169,18 +157,25 @@ def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
                     st.metric(label="Dirección", value=info_terreno['direccion'])
                 if info_terreno.get('geojson'):
                     geojson_data = json.loads(info_terreno['geojson'])
-                    # Ya no necesitamos un centro fijo si Folium lo ajusta automáticamente
-                    m = folium.Map(tiles="OpenStreetMap") # Usa tiles predeterminados
-                    folium.GeoJson(geojson_data).add_to(m) 
-                    m.fit_bounds(folium.GeoJson(geojson_data).get_bounds()) # Centra y hace zoom en el polígono
+                    
+                    # --- CORRECCIÓN CLAVE PARA MAPA FLUIDO ---
+                    # 1. Crear el mapa base
+                    m = folium.Map(tiles="OpenStreetMap")
+                    
+                    # 2. Añadir el polígono como una capa GeoJson
+                    geojson_layer = folium.GeoJson(geojson_data)
+                    
+                    # 3. Ajustar los límites del mapa para que se centre en el polígono
+                    m.fit_bounds(geojson_layer.get_bounds())
                     
                     st.write("**Visualización Geográfica del Terreno:**")
-                    st_folium(m, width=700, height=500)
+                    # 4. Renderizar el mapa diciéndole que no devuelva ninguna interacción
+                    st_folium(m, width=700, height=500, returned_objects=[])
+
             else:
                 st.warning(f"⚠️ No se encontró registro geográfico para el número predial: '{numero_predial_nacional}'.")
         else:
             st.warning("⚠️ La información catastral no contiene un 'Número Predial Nacional' para buscar en la base geográfica.")
-
 
 # --- INTERFAZ GRÁFICA Y LÓGICA PRINCIPAL ---
 st.title("Panel de Análisis de Matrículas 🕸️")
@@ -211,14 +206,13 @@ with col_grafo:
         st.info(mensaje)
 
         if nombre_archivo_html:
-            # --- LEYENDA DE COLORES ---
             st.markdown("""
                 **Leyenda:** &nbsp;
                 <span style="display:inline-block; width:12px; height:12px; border-radius:50%; background-color:#dc3545; vertical-align:middle; border:1px solid #555;"></span> Matrícula Buscada &nbsp;
                 <span style="display:inline-block; width:12px; height:12px; border-radius:50%; background-color:#28a745; vertical-align:middle; border:1px solid #555;"></span> En Base Catastral &nbsp;
                 <span style="display:inline-block; width:12px; height:12px; border-radius:50%; background-color:#ffc107; vertical-align:middle; border:1px solid #555;"></span> No en Base Catastral
             """, unsafe_allow_html=True)
-            st.markdown("---") # Separador visual
+            st.markdown("---")
             
             with open(nombre_archivo_html, 'r', encoding='utf-8') as f:
                 source_code = f.read()
