@@ -158,20 +158,22 @@ def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
                 if info_terreno.get('geojson'):
                     geojson_data = json.loads(info_terreno['geojson'])
                     
-                    # --- CORRECCIÓN CLAVE PARA MAPA FLUIDO ---
-                    # 1. Crear el mapa base
+                    # --- SOLUCIÓN ACTUALIZADA PARA MAPA FLUIDO Y VISIBLE ---
                     m = folium.Map(tiles="OpenStreetMap")
                     
-                    # 2. Añadir el polígono como una capa GeoJson
-                    geojson_layer = folium.GeoJson(geojson_data)
-                    
-                    # 3. Ajustar los límites del mapa para que se centre en el polígono
-                    m.fit_bounds(geojson_layer.get_bounds())
+                    # Añadir el GeoJson directamente a st_folium o como una capa a Folium y luego renderizar
+                    # El problema con returned_objects=[] es que desconecta el componente del estado.
+                    # Es mejor añadir el GeoJson a la instancia de Folium y luego pasar la instancia.
+                    folium.GeoJson(geojson_data).add_to(m)
+                    m.fit_bounds(folium.GeoJson(geojson_data).get_bounds())
                     
                     st.write("**Visualización Geográfica del Terreno:**")
-                    # 4. Renderizar el mapa diciéndole que no devuelva ninguna interacción
-                    st_folium(m, width=700, height=500, returned_objects=[])
-
+                    # Para evitar recargas, podemos quitar returned_objects o solo pasarle lo mínimo.
+                    # Al no pasarle returned_objects, por defecto ya devolverá la última_state
+                    # Pero el ajuste de fit_bounds ayuda a que se vea bien inicialmente.
+                    st_folium(m, width=700, height=500, key=f"map_{matricula_a_analizar}") 
+                    # Se añade una key única para que Streamlit sepa que es un mapa distinto en cada análisis
+                    # y lo reconstruya solo cuando la matrícula cambie.
             else:
                 st.warning(f"⚠️ No se encontró registro geográfico para el número predial: '{numero_predial_nacional}'.")
         else:
