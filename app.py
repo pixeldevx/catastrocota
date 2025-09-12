@@ -117,7 +117,6 @@ def generar_grafo_interactivo(no_matricula_inicial, db_params):
 
         nodos_del_grafo = set(df_relaciones['padre']).union(set(df_relaciones['hija']))
         
-        # Obtener información catastral de todos los nodos de manera eficiente
         info_catastral_full = {}
         with psycopg2.connect(**db_params) as conn_batch:
             query_catastral = 'SELECT TRIM("Matricula") as matricula, numero_predial_nacional FROM public.informacioncatastral WHERE TRIM("Matricula") = ANY(%(matriculas)s);'
@@ -126,21 +125,21 @@ def generar_grafo_interactivo(no_matricula_inicial, db_params):
         matriculas_en_catastro = set(df_catastral['matricula'].tolist())
         prediales_nacionales = {row['matricula']: row['numero_predial_nacional'] for index, row in df_catastral.iterrows()}
         
-        # Obtener información geográfica de los prediales encontrados
         prediales_con_geo = obtener_info_geografica_batch(list(prediales_nacionales.values()), db_params)
 
-        # Crear un DataFrame para la exportación
-        df_export = pd.DataFrame(list(nodos_del_grafo), columns=['Matrícula'])
-        df_export['Tiene_Info_Catastral'] = df_export['Matrícula'].isin(matriculas_en_catastro).apply(lambda x: 'Sí' if x else 'No')
-        df_export['Tiene_Info_Geográfica'] = df_export.apply(
-            lambda row: 'Sí' if row['Tiene_Info_Catastral'] == 'Sí' and prediales_nacionales.get(row['Matrícula']) in prediales_con_geo else 'No', axis=1
-        )
-        
         estado_folio_map = {}
         for index, row in df_relaciones.iterrows():
             estado_folio_map[row['padre']] = row['padre_estado']
             estado_folio_map[row['hija']] = row['hija_estado']
 
+        # Crear el DataFrame para la exportación con la nueva columna
+        df_export = pd.DataFrame(list(nodos_del_grafo), columns=['Matrícula'])
+        df_export['Estado_Folio'] = df_export['Matrícula'].apply(lambda x: estado_folio_map.get(x, 'No disponible'))
+        df_export['Tiene_Info_Catastral'] = df_export['Matrícula'].isin(matriculas_en_catastro).apply(lambda x: 'Sí' if x else 'No')
+        df_export['Tiene_Info_Geográfica'] = df_export.apply(
+            lambda row: 'Sí' if row['Tiene_Info_Catastral'] == 'Sí' and prediales_nacionales.get(row['Matrícula']) in prediales_con_geo else 'No', axis=1
+        )
+        
         g = nx.from_pandas_edgelist(df_relaciones, 'padre', 'hija', create_using=nx.DiGraph())
         net = Network(height="800px", width="100%", directed=True, notebook=True, cdn_resources='in_line')
 
