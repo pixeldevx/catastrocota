@@ -83,7 +83,7 @@ def obtener_info_geografica_batch(prediales, db_params):
         st.error(f"Error al verificar existencia geográfica: {e}")
         return set()
 
-# --- FUNCIÓN DEL GRAFO (MODIFICADA) ---
+# --- FUNCIÓN DEL GRAFO ---
 def generar_grafo_interactivo(no_matricula_inicial, db_params):
     try:
         with psycopg2.connect(**db_params) as conn:
@@ -173,7 +173,94 @@ def generar_grafo_interactivo(no_matricula_inicial, db_params):
         st.error(f"❌ Ocurrió un error al generar el grafo: {e}")
         return None, None, pd.DataFrame()
 
-# --- FUNCIÓN PARA MOSTRAR LA TARJETA DE ANÁLISIS ---
+# --- NUEVA FUNCIÓN PARA GENERAR EL MAPA MULTIPLE ---
+def generar_mapa_multiple(df_nodos, no_matricula_inicial, db_params):
+    st.markdown("---")
+    st.subheader("Visualización Geográfica de Predios del Grafo")
+    
+    predios_con_geo = df_nodos[(df_nodos['Tiene_Info_Catastral'] == 'Sí') & (df_nodos['Tiene_Info_Geográfica'] == 'Sí')]
+    
+    if predios_con_geo.empty:
+        st.warning("⚠️ Ninguno de los predios del grafo tiene información geográfica para mostrar.")
+        return
+
+    m = folium.Map(tiles="OpenStreetMap")
+    has_polygons = False
+    bounds = None
+
+    for index, row in predios_con_geo.iterrows():
+        matricula = row['Matrícula']
+        estado_folio = row['Estado_Folio']
+        
+        # Obtener el numero predial nacional para buscar el GeoJSON
+        with psycopg2.connect(**db_params) as conn:
+            query = 'SELECT numero_predial_nacional FROM public.informacioncatastral WHERE TRIM("Matricula") = %(matricula)s;'
+            df_predial = pd.read_sql_query(query, conn, params={'matricula': matricula})
+            if not df_predial.empty:
+                numero_predial_nacional = df_predial['numero_predial_nacional'].iloc[0]
+            else:
+                continue
+
+        # Obtener el GeoJSON para el predio
+        info_terreno = obtener_info_terreno_por_predial(numero_predial_nacional, db_params)
+        
+        if info_terreno and info_terreno.get('geojson'):
+            geojson_data = json.loads(info_terreno['geojson'])
+            
+            # Asignar color según el estado del folio
+            if matricula == no_matricula_inicial:
+                color = "#FFD700"  # Amarillo para la matrícula inicial
+            elif estado_folio == 'ACTIVO':
+                color = "#28a745"  # Verde para activo
+            elif estado_folio == 'CANCELADO':
+                color = "#dc3545"  # Rojo para cancelado
+            else:
+                color = "#007BFF"  # Azul para otros casos
+
+            # Crear el popup con la información
+            popup_html = f"""
+            <strong>Matrícula:</strong> {matricula}<br>
+            <strong>Estado Folio:</strong> {estado_folio}<br>
+            <strong>Predial Nacional:</strong> {numero_predial_nacional}
+            """
+            
+            folium_geojson = folium.GeoJson(
+                geojson_data,
+                style_function=lambda feature: {
+                    'fillColor': color,
+                    'color': color,
+                    'weight': 2,
+                    'fillOpacity': 0.5
+                }
+            )
+            folium_geojson.add_child(folium.Popup(popup_html))
+            folium_geojson.add_to(m)
+            has_polygons = True
+            
+            # Ajustar los límites del mapa para que se vean todos los polígonos
+            if bounds is None:
+                bounds = folium_geojson.get_bounds()
+            else:
+                bounds = [
+                    (min(bounds[0][0], folium_geojson.get_bounds()[0][0]), min(bounds[0][1], folium_geojson.get_bounds()[0][1])),
+                    (max(bounds[1][0], folium_geojson.get_bounds()[1][0]), max(bounds[1][1], folium_geojson.get_bounds()[1][1]))
+                ]
+
+    if has_polygons:
+        if bounds:
+            m.fit_bounds(bounds)
+        
+        st.write("**Visualización Geográfica de todos los predios del grafo:**")
+        mapa_path = f"mapa_grafo_{no_matricula_inicial}.html"
+        m.save(mapa_path)
+        with open(mapa_path, "r", encoding="utf-8") as f:
+            map_html = f.read()
+        st.components.v1.html(map_html, height=500)
+        os.remove(mapa_path)
+    else:
+        st.info("No se encontró información geográfica para los predios del grafo.")
+
+# --- FUNCIÓN PARA MOSTRAR LA TARJETA DE ANÁLISIS (sin cambios) ---
 def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
     st.markdown("---")
     
@@ -246,17 +333,27 @@ col_grafo, col_analisis = st.columns([2, 1])
 with col_grafo:
     st.subheader("Visualizador de Grafo de Relaciones")
     matricula_input_grafo = st.text_input("Introduce la matrícula para generar el grafo:", key="input_grafo")
-    if st.button("Generar Grafo Interactivo", type="primary"):
-        if matricula_input_grafo:
-            st.session_state.matricula_grafo = matricula_input_grafo
-            st.session_state.matricula_analisis = matricula_input_grafo
-        else:
-            st.warning("Por favor, introduce una matrícula para generar el grafo.")
-
+    
+    col_buttons = st.columns(2)
+    with col_buttons[0]:
+        if st.button("Generar Grafo Interactivo", type="primary"):
+            if matricula_input_grafo:
+                st.session_state.matricula_grafo = matricula_input_grafo
+                st.session_state.matricula_analisis = matricula_input_grafo
+                st.session_state.df_nodos = pd.DataFrame() # Reiniciar el DataFrame del mapa
+            else:
+                st.warning("Por favor, introduce una matrícula para generar el grafo.")
+    
+    with col_buttons[1]:
+        if st.session_state.matricula_grafo:
+            if st.button("Generar Mapa Geográfico"):
+                st.session_state.show_map = True
+                
     if st.session_state.matricula_grafo:
         db_credentials = st.secrets["db_credentials"]
         with st.spinner("Generando grafo..."):
             nombre_archivo_html, mensaje, df_nodos = generar_grafo_interactivo(st.session_state.matricula_grafo, db_credentials)
+            st.session_state.df_nodos = df_nodos
         st.info(mensaje)
 
         if nombre_archivo_html:
@@ -282,6 +379,13 @@ with col_grafo:
                     file_name=f"nodos_grafo_{st.session_state.matricula_grafo}.csv",
                     mime="text/csv",
                 )
+    
+    # Lógica para mostrar el mapa
+    if 'show_map' in st.session_state and st.session_state.show_map:
+        if not st.session_state.df_nodos.empty:
+            with st.spinner("Generando mapa de predios..."):
+                generar_mapa_multiple(st.session_state.df_nodos, st.session_state.matricula_grafo, db_credentials)
+            st.session_state.show_map = False
 
 with col_analisis:
     st.subheader("Análisis Catastral y Geográfico")
