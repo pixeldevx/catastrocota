@@ -69,11 +69,24 @@ def obtener_existencia_catastral_batch(matriculas, db_params):
         st.error(f"Error al verificar existencia catastral: {e}")
         return set()
 
+def obtener_info_geografica_batch(prediales, db_params):
+    """Verifica si los números prediales tienen información geográfica."""
+    if not prediales:
+        return set()
+    prediales_limpios = [str(p).strip() for p in prediales]
+    try:
+        with psycopg2.connect(**db_params) as conn:
+            query = 'SELECT DISTINCT codigo FROM public.terrenos WHERE codigo = ANY(%(prediales)s);'
+            df = pd.read_sql_query(query, conn, params={'prediales': prediales_limpios})
+            return set(df['codigo'].tolist())
+    except Exception as e:
+        st.error(f"Error al verificar existencia geográfica: {e}")
+        return set()
+
 # --- FUNCIÓN DEL GRAFO (MODIFICADA) ---
 def generar_grafo_interactivo(no_matricula_inicial, db_params):
     try:
         with psycopg2.connect(**db_params) as conn:
-            # --- CORRECCIÓN: La consulta ahora trae el estado_folio ---
             query_recursiva = """
             WITH RECURSIVE familia_grafo AS (
                 SELECT id, no_matricula_inmobiliaria FROM public.matriculas WHERE TRIM(no_matricula_inmobiliaria) = %(start_node)s
@@ -95,17 +108,34 @@ def generar_grafo_interactivo(no_matricula_inicial, db_params):
             JOIN public.matriculas padre ON rel.matricula_padre_id = padre.id
             JOIN public.matriculas hija ON rel.matricula_hija_id = hija.id
             WHERE padre.id IN (SELECT id FROM familia_grafo)
-              AND hija.id IN (SELECT id FROM familia_grafo);
+                AND hija.id IN (SELECT id FROM familia_grafo);
             """
             df_relaciones = pd.read_sql_query(query_recursiva, conn, params={'start_node': str(no_matricula_inicial).strip()})
 
         if df_relaciones.empty:
-            return None, f"⚠️ No se encontraron relaciones para '{no_matricula_inicial}'."
-        
-        nodos_del_grafo = set(df_relaciones['padre']).union(set(df_relaciones['hija']))
-        matriculas_en_catastro = obtener_existencia_catastral_batch(nodos_del_grafo, db_params)
+            return None, f"⚠️ No se encontraron relaciones para '{no_matricula_inicial}'.", pd.DataFrame()
 
-        # --- CORRECCIÓN: Creamos un mapa para guardar el estado_folio de cada matrícula ---
+        nodos_del_grafo = set(df_relaciones['padre']).union(set(df_relaciones['hija']))
+        
+        # Obtener información catastral de todos los nodos de manera eficiente
+        info_catastral_full = {}
+        with psycopg2.connect(**db_params) as conn_batch:
+            query_catastral = 'SELECT TRIM("Matricula") as matricula, numero_predial_nacional FROM public.informacioncatastral WHERE TRIM("Matricula") = ANY(%(matriculas)s);'
+            df_catastral = pd.read_sql_query(query_catastral, conn_batch, params={'matriculas': list(nodos_del_grafo)})
+        
+        matriculas_en_catastro = set(df_catastral['matricula'].tolist())
+        prediales_nacionales = {row['matricula']: row['numero_predial_nacional'] for index, row in df_catastral.iterrows()}
+        
+        # Obtener información geográfica de los prediales encontrados
+        prediales_con_geo = obtener_info_geografica_batch(list(prediales_nacionales.values()), db_params)
+
+        # Crear un DataFrame para la exportación
+        df_export = pd.DataFrame(list(nodos_del_grafo), columns=['Matrícula'])
+        df_export['Tiene_Info_Catastral'] = df_export['Matrícula'].isin(matriculas_en_catastro).apply(lambda x: 'Sí' if x else 'No')
+        df_export['Tiene_Info_Geográfica'] = df_export.apply(
+            lambda row: 'Sí' if row['Tiene_Info_Catastral'] == 'Sí' and prediales_nacionales.get(row['Matrícula']) in prediales_con_geo else 'No', axis=1
+        )
+        
         estado_folio_map = {}
         for index, row in df_relaciones.iterrows():
             estado_folio_map[row['padre']] = row['padre_estado']
@@ -117,7 +147,9 @@ def generar_grafo_interactivo(no_matricula_inicial, db_params):
         for node_id in g.nodes():
             estado_folio = estado_folio_map.get(str(node_id), 'No disponible')
             
-            if str(node_id) in matriculas_en_catastro:
+            tiene_catastral = str(node_id) in matriculas_en_catastro
+            
+            if tiene_catastral:
                 title = f"Matrícula: {node_id}\nEstado Folio: {estado_folio}\nEstado: Se encuentra en la base catastral."
                 color = "#28a745"
             else:
@@ -137,9 +169,10 @@ def generar_grafo_interactivo(no_matricula_inicial, db_params):
         net.set_options(json.dumps(options))
         nombre_archivo = f"grafo_{no_matricula_inicial}.html"
         net.save_graph(nombre_archivo)
-        return nombre_archivo, f"✅ Grafo interactivo generado con {len(g.nodes())} nodos."
+        return nombre_archivo, f"✅ Grafo interactivo generado con {len(g.nodes())} nodos.", df_export
     except Exception as e:
-        return None, f"❌ Ocurrió un error al generar el grafo: {e}"
+        st.error(f"❌ Ocurrió un error al generar el grafo: {e}")
+        return None, None, pd.DataFrame()
 
 # --- FUNCIÓN PARA MOSTRAR LA TARJETA DE ANÁLISIS ---
 def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
@@ -224,7 +257,7 @@ with col_grafo:
     if st.session_state.matricula_grafo:
         db_credentials = st.secrets["db_credentials"]
         with st.spinner("Generando grafo..."):
-            nombre_archivo_html, mensaje = generar_grafo_interactivo(st.session_state.matricula_grafo, db_credentials)
+            nombre_archivo_html, mensaje, df_nodos = generar_grafo_interactivo(st.session_state.matricula_grafo, db_credentials)
         st.info(mensaje)
 
         if nombre_archivo_html:
@@ -240,6 +273,16 @@ with col_grafo:
                 source_code = f.read()
                 st.components.v1.html(source_code, height=800, scrolling=True)
             os.remove(nombre_archivo_html)
+
+            # Botón de descarga
+            if not df_nodos.empty:
+                csv_data = df_nodos.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="Descargar datos del grafo",
+                    data=csv_data,
+                    file_name=f"nodos_grafo_{st.session_state.matricula_grafo}.csv",
+                    mime="text/csv",
+                )
 
 with col_analisis:
     st.subheader("Análisis Catastral y Geográfico")
