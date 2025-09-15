@@ -11,7 +11,7 @@ from streamlit_folium import st_folium
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(layout="wide")
 
-# --- FUNCIONES DE BASE DE DATOS (sin cambios) ---
+# --- FUNCIONES DE BASE DE DATOS (EXISTENTES) ---
 def obtener_info_catastral(matricula, db_params):
     if not matricula: return {}
     try:
@@ -83,7 +83,27 @@ def obtener_info_geografica_batch(prediales, db_params):
         st.error(f"Error al verificar existencia geográfica: {e}")
         return set()
 
-# --- FUNCIÓN DEL GRAFO ---
+# --- NUEVA FUNCIÓN PARA OBTENER ANOTACIONES ---
+def obtener_anotaciones_por_matricula(matricula, db_params):
+    """Obtiene y retorna las anotaciones para una matrícula específica, ordenadas por número."""
+    try:
+        with psycopg2.connect(**db_params) as conn:
+            query = """
+                SELECT
+                    no_matricula,
+                    numero_anotacion,
+                    anotacion
+                FROM public.anotaciones
+                WHERE TRIM(no_matricula) = %(matricula)s
+                ORDER BY numero_anotacion ASC;
+            """
+            df = pd.read_sql_query(query, conn, params={'matricula': str(matricula).strip()})
+            return df
+    except Exception as e:
+        st.error(f"Error al obtener anotaciones: {e}")
+        return pd.DataFrame()
+
+# --- FUNCIONES DEL GRAFO Y MAPA (EXISTENTES) ---
 def generar_grafo_interactivo(no_matricula_inicial, db_params):
     try:
         with psycopg2.connect(**db_params) as conn:
@@ -132,7 +152,6 @@ def generar_grafo_interactivo(no_matricula_inicial, db_params):
             estado_folio_map[row['padre']] = row['padre_estado']
             estado_folio_map[row['hija']] = row['hija_estado']
 
-        # Crear el DataFrame para la exportación con la nueva columna
         df_export = pd.DataFrame(list(nodos_del_grafo), columns=['Matrícula'])
         df_export['Estado_Folio'] = df_export['Matrícula'].apply(lambda x: estado_folio_map.get(x, 'No disponible'))
         df_export['Tiene_Info_Catastral'] = df_export['Matrícula'].isin(matriculas_en_catastro).apply(lambda x: 'Sí' if x else 'No')
@@ -173,7 +192,6 @@ def generar_grafo_interactivo(no_matricula_inicial, db_params):
         st.error(f"❌ Ocurrió un error al generar el grafo: {e}")
         return None, None, pd.DataFrame()
 
-# --- NUEVA FUNCIÓN PARA GENERAR EL MAPA MULTIPLE ---
 def generar_mapa_multiple(df_nodos, no_matricula_inicial, db_params):
     st.markdown("---")
     st.subheader("Visualización Geográfica de Predios del Grafo")
@@ -192,7 +210,6 @@ def generar_mapa_multiple(df_nodos, no_matricula_inicial, db_params):
         matricula = row['Matrícula']
         estado_folio = row['Estado_Folio']
         
-        # Obtener el numero predial nacional para buscar el GeoJSON
         with psycopg2.connect(**db_params) as conn:
             query = 'SELECT numero_predial_nacional FROM public.informacioncatastral WHERE TRIM("Matricula") = %(matricula)s;'
             df_predial = pd.read_sql_query(query, conn, params={'matricula': matricula})
@@ -201,23 +218,20 @@ def generar_mapa_multiple(df_nodos, no_matricula_inicial, db_params):
             else:
                 continue
 
-        # Obtener el GeoJSON para el predio
         info_terreno = obtener_info_terreno_por_predial(numero_predial_nacional, db_params)
         
         if info_terreno and info_terreno.get('geojson'):
             geojson_data = json.loads(info_terreno['geojson'])
             
-            # Asignar color según el estado del folio
             if matricula == no_matricula_inicial:
                 color = "#FFD700"  # Amarillo para la matrícula inicial
             elif estado_folio == 'ACTIVO':
-                color = "#28a745"  # Verde para activo
+                color = "#28a745"
             elif estado_folio == 'CANCELADO':
-                color = "#dc3545"  # Rojo para cancelado
+                color = "#dc3545"
             else:
-                color = "#007BFF"  # Azul para otros casos
+                color = "#007BFF"
 
-            # Crear el popup con la información
             popup_html = f"""
             <strong>Matrícula:</strong> {matricula}<br>
             <strong>Estado Folio:</strong> {estado_folio}<br>
@@ -237,7 +251,6 @@ def generar_mapa_multiple(df_nodos, no_matricula_inicial, db_params):
             folium_geojson.add_to(m)
             has_polygons = True
             
-            # Ajustar los límites del mapa para que se vean todos los polígonos
             if bounds is None:
                 bounds = folium_geojson.get_bounds()
             else:
@@ -260,11 +273,12 @@ def generar_mapa_multiple(df_nodos, no_matricula_inicial, db_params):
     else:
         st.info("No se encontró información geográfica para los predios del grafo.")
 
-# --- FUNCIÓN PARA MOSTRAR LA TARJETA DE ANÁLISIS (sin cambios) ---
+# --- FUNCIÓN PARA MOSTRAR LA TARJETA DE ANÁLISIS (MODIFICADA) ---
 def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
     st.markdown("---")
     
     info_catastral = obtener_info_catastral(matricula_a_analizar, db_params).get(matricula_a_analizar.strip())
+    anotaciones_df = obtener_anotaciones_por_matricula(matricula_a_analizar, db_params)
     
     if not info_catastral:
         st.error(f"❌ No se encontró la matrícula '{matricula_a_analizar}' en la base catastral.")
@@ -314,11 +328,22 @@ def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
                         map_html = f.read()
                     st.components.v1.html(map_html, height=500)
                     os.remove(mapa_path)
-
             else:
                 st.warning(f"⚠️ No se encontró registro geográfico para el número predial: '{numero_predial_nacional}'.")
         else:
             st.warning("⚠️ La información catastral no contiene un 'Número Predial Nacional' para buscar.")
+
+    # --- NUEVA SECCIÓN DE ANOTACIONES ---
+    st.markdown("---")
+    if not anotaciones_df.empty:
+        with st.expander(f"Historial de Anotaciones ({len(anotaciones_df)})"):
+            for index, row in anotaciones_df.iterrows():
+                st.markdown(f"**Anotación # {row['numero_anotacion']}**")
+                st.markdown(f"**Fecha:** {row['fecha_anotacion']}")
+                st.write(row['anotacion'])
+                st.markdown("---")
+    else:
+        st.info("ℹ️ No se encontraron anotaciones para esta matrícula.")
 
 # --- INTERFAZ GRÁFICA Y LÓGICA PRINCIPAL ---
 st.title("Asistente de Análisis Catastral 🗺️")
@@ -370,7 +395,6 @@ with col_grafo:
                 st.components.v1.html(source_code, height=800, scrolling=True)
             os.remove(nombre_archivo_html)
 
-            # Botón de descarga
             if not df_nodos.empty:
                 csv_data = df_nodos.to_csv(index=False).encode('utf-8')
                 st.download_button(
@@ -380,7 +404,6 @@ with col_grafo:
                     mime="text/csv",
                 )
     
-    # Lógica para mostrar el mapa
     if 'show_map' in st.session_state and st.session_state.show_map:
         if not st.session_state.df_nodos.empty:
             with st.spinner("Generando mapa de predios..."):
