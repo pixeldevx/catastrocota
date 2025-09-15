@@ -339,7 +339,6 @@ def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
         with st.expander(f"Historial de Anotaciones ({len(anotaciones_df)})"):
             for index, row in anotaciones_df.iterrows():
                 st.markdown(f"**Anotación # {row['numero_anotacion']}**")
-                st.markdown(f"**Fecha:** {row['fecha_anotacion']}")
                 st.write(row['anotacion'])
                 st.markdown("---")
     else:
