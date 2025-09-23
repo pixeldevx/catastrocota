@@ -5,3 +5,4 @@ pyvis
 streamlit
 folium
 streamlit-folium
+openai
