@@ -1,7 +1,8 @@
-psycopg2-binary
+streamlit
+psycopg2
 pandas
 networkx
 pyvis
-streamlit
 folium
 streamlit-folium
+openai
