@@ -7,6 +7,7 @@ import os
 import json
 import folium
 from streamlit_folium import st_folium
+import openai
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(layout="wide")
@@ -103,7 +104,7 @@ def obtener_anotaciones_por_matricula(matricula, db_params):
         st.error(f"Error al obtener anotaciones: {e}")
         return pd.DataFrame()
 
-# --- FUNCIONES DEL GRAFO Y MAPA (EXISTENTES) ---
+# --- FUNCIONES DEL GRAFO Y MAPA ---
 def generar_grafo_interactivo(no_matricula_inicial, db_params):
     try:
         with psycopg2.connect(**db_params) as conn:
@@ -338,8 +339,8 @@ def mostrar_tarjeta_analisis(matricula_a_analizar, db_params):
     if not anotaciones_df.empty:
         with st.expander(f"Historial de Anotaciones ({len(anotaciones_df)})"):
             for index, row in anotaciones_df.iterrows():
-                st.markdown(f"**Anotación # {row['numero_anotacion']}**")
-                st.write(row['anotacion'])
+                st.markdown(f"**Anotación # {row.get('numero_anotacion', 'No disponible')}**")
+                st.write(row.get('anotacion', 'No disponible'))
                 st.markdown("---")
     else:
         st.info("ℹ️ No se encontraron anotaciones para esta matrícula.")
